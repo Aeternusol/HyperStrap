@@ -13,8 +13,8 @@
 </LinearLayout>
 
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:orientation="horizontal">
-<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-light" android:text="Fast" android:textColor="#111111" android:textSize="38sp" />
-<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Strap" android:textColor="#111111" android:textSize="38sp" android:textStyle="bold" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-light" android:text="Star" android:textColor="#111111" android:textSize="38sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="gazer" android:textColor="#111111" android:textSize="38sp" android:textStyle="bold" />
 </LinearLayout>
 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Roblox tweaks, applied through Shizuku." android:textColor="#6B7280" android:textSize="14sp" />
 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Theme color" android:textColor="#6B7280" android:textSize="13sp" />
@@ -48,6 +48,29 @@
 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/cbGrass" style="@style/FsSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Remove grass" />
 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/cbShadows" style="@style/FsSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Disable shadows (best effort)" />
 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/cbTextures" style="@style/FsSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Low textures" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.card.MaterialCardView android:id="@+id/packsCard" style="@style/FsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Flag packs" android:textColor="#111111" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Copy a JSON flag file, then import it. Long-press a pack to delete it." android:textColor="#6B7280" android:textSize="13sp" />
+<TextView android:id="@+id/packEmpty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="No packs yet." android:textColor="#9CA3AF" android:textSize="13sp" />
+<LinearLayout android:id="@+id/packList" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="vertical" />
+<com.google.android.material.button.MaterialButton android:id="@+id/importPackButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Import from clipboard" android:textColor="#FFFFFF" app:backgroundTint="#111111" app:cornerRadius="24dp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.card.MaterialCardView android:id="@+id/customCard" style="@style/FsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Custom flags" android:textColor="#111111" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Paste FFlags as JSON, or import a file." android:textColor="#6B7280" android:textSize="13sp" />
+<EditText android:id="@+id/customInput" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:background="#FFFFFF" android:fontFamily="monospace" android:gravity="top|start" android:hint="{&quot;FFlagExample&quot;: true}" android:inputType="textMultiLine|textNoSuggestions" android:minLines="4" android:padding="12dp" android:textColor="#111111" android:textColorHint="#9CA3AF" android:textSize="13sp" />
+<com.google.android.material.button.MaterialButton android:id="@+id/addCustomButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Add flags" android:textColor="#FFFFFF" app:backgroundTint="#111111" app:cornerRadius="24dp" />
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+<com.google.android.material.button.MaterialButton android:id="@+id/importButton" android:layout_width="0dp" android:layout_height="48dp" android:layout_marginEnd="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Import" android:textColor="#111111" app:backgroundTint="#EEF0F2" app:cornerRadius="24dp" />
+<com.google.android.material.button.MaterialButton android:id="@+id/exportButton" android:layout_width="0dp" android:layout_height="48dp" android:layout_marginStart="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Export" android:textColor="#111111" app:backgroundTint="#EEF0F2" app:cornerRadius="24dp" />
+</LinearLayout>
 </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
 
