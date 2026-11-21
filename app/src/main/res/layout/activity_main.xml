@@ -51,6 +51,16 @@
 </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
 
+<com.google.android.material.card.MaterialCardView android:id="@+id/packsCard" style="@style/FsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Flag packs" android:textColor="#111111" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Copy a JSON flag file, then import it. Long-press a pack to delete it." android:textColor="#6B7280" android:textSize="13sp" />
+<TextView android:id="@+id/packEmpty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="No packs yet." android:textColor="#9CA3AF" android:textSize="13sp" />
+<LinearLayout android:id="@+id/packList" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="vertical" />
+<com.google.android.material.button.MaterialButton android:id="@+id/importPackButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Import from clipboard" android:textColor="#FFFFFF" app:backgroundTint="#111111" app:cornerRadius="24dp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
 <com.google.android.material.card.MaterialCardView android:id="@+id/customCard" style="@style/FsCard" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Custom flags" android:textColor="#111111" android:textSize="16sp" />

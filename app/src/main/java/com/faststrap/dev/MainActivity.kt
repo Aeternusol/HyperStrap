@@ -1,5 +1,6 @@
 package com.faststrap.dev
 
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -8,6 +9,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
 import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -18,6 +20,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -45,6 +48,21 @@ class MainActivity : AppCompatActivity() {
         val flags: Map<String, Any>
     )
 
+    /** A set of flags imported from the clipboard. Applied before tweaks and custom flags. */
+    private class Pack(
+        val id: Long,
+        val name: String,
+        var on: Boolean,
+        val flags: JSONObject
+    ) {
+        fun keys(): List<String> {
+            val out = mutableListOf<String>()
+            val it = flags.keys()
+            while (it.hasNext()) out.add(it.next())
+            return out
+        }
+    }
+
     private val flagsPath = "/data/local/tmp/ClientAppSettings.json"
     private val backupPath = "/data/local/tmp/faststrap_refresh_backup"
     private val fpsProp = "debug.graphics.game_default_frame_rate.disabled"
@@ -52,7 +70,11 @@ class MainActivity : AppCompatActivity() {
     private val shellTimeoutSeconds = 20L
     private val reqImport = 201
     private val reqExport = 202
+    private val maxClipboardChars = 2_000_000
     private val flagNameRegex = Regex("^[A-Za-z0-9_]+$")
+    private val pairRegex = Regex(
+        "\"([A-Za-z0-9_]+)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|true|false|-?\\d+(?:\\.\\d+)?)"
+    )
 
     private val palettes = listOf(
         pal("#FFFFFF", "#ECEFFE", "#E5F1F8", "#FBE9EE", "#111111", "#AAB6F5", "#B9C1F2"),
@@ -70,6 +92,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hintText: TextView
     private lateinit var countText: TextView
     private lateinit var outputText: TextView
+    private lateinit var packEmpty: TextView
+    private lateinit var packList: LinearLayout
     private lateinit var requestButton: MaterialButton
     private lateinit var applyButton: MaterialButton
     private lateinit var viewButton: MaterialButton
@@ -77,12 +101,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var addCustomButton: MaterialButton
     private lateinit var importButton: MaterialButton
     private lateinit var exportButton: MaterialButton
+    private lateinit var importPackButton: MaterialButton
     private lateinit var customInput: EditText
     private lateinit var refreshButton: MaterialCardView
     private lateinit var statusCard: MaterialCardView
     private lateinit var heroCard: MaterialCardView
     private lateinit var perfCard: MaterialCardView
     private lateinit var gfxCard: MaterialCardView
+    private lateinit var packsCard: MaterialCardView
     private lateinit var customCard: MaterialCardView
     private lateinit var swatchRow: LinearLayout
     private lateinit var segRow: LinearLayout
@@ -117,6 +143,8 @@ class MainActivity : AppCompatActivity() {
         hintText = findViewById(R.id.hintText)
         countText = findViewById(R.id.countText)
         outputText = findViewById(R.id.outputText)
+        packEmpty = findViewById(R.id.packEmpty)
+        packList = findViewById(R.id.packList)
         requestButton = findViewById(R.id.requestButton)
         applyButton = findViewById(R.id.applyButton)
         viewButton = findViewById(R.id.viewButton)
@@ -124,12 +152,14 @@ class MainActivity : AppCompatActivity() {
         addCustomButton = findViewById(R.id.addCustomButton)
         importButton = findViewById(R.id.importButton)
         exportButton = findViewById(R.id.exportButton)
+        importPackButton = findViewById(R.id.importPackButton)
         customInput = findViewById(R.id.customInput)
         refreshButton = findViewById(R.id.refreshButton)
         statusCard = findViewById(R.id.statusCard)
         heroCard = findViewById(R.id.heroCard)
         perfCard = findViewById(R.id.perfCard)
         gfxCard = findViewById(R.id.gfxCard)
+        packsCard = findViewById(R.id.packsCard)
         customCard = findViewById(R.id.customCard)
         swatchRow = findViewById(R.id.swatchRow)
         segRow = findViewById(R.id.segRow)
@@ -177,19 +207,20 @@ class MainActivity : AppCompatActivity() {
 
         requestButton.setOnClickListener { Shizuku.requestPermission(100) }
         applyButton.setOnClickListener {
-            confirmRestart("Apply the selected tweaks. Roblox needs a restart for them to take effect.") {
+            confirmRestart("Apply the selected tweaks and enabled packs. Roblox needs a restart for them to take effect.") {
                 applyFlags(it)
             }
         }
         viewButton.setOnClickListener { viewFlags() }
         removeButton.setOnClickListener {
-            confirmRestart("Remove all Stargazer flags, including custom ones you added here. Flags you added by hand outside the app are kept.") {
+            confirmRestart("Remove all Stargazer flags, including packs and custom flags added here. Flags you added by hand outside the app are kept.") {
                 removeFlags(it)
             }
         }
         addCustomButton.setOnClickListener { onAddCustomClicked() }
         importButton.setOnClickListener { startImport() }
         exportButton.setOnClickListener { startExport() }
+        importPackButton.setOnClickListener { importPackFromClipboard() }
         refreshButton.setOnClickListener { updateStatus() }
 
         applyTheme()
@@ -248,6 +279,7 @@ class MainActivity : AppCompatActivity() {
         heroCard.setCardBackgroundColor(p.c1)
         perfCard.setCardBackgroundColor(p.c2)
         gfxCard.setCardBackgroundColor(p.c3)
+        packsCard.setCardBackgroundColor(p.c2)
         customCard.setCardBackgroundColor(p.c1)
         refreshButton.setCardBackgroundColor(p.accent)
         statusCard.setCardBackgroundColor(p.accent)
@@ -255,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         requestButton.backgroundTintList = tint
         applyButton.backgroundTintList = tint
         addCustomButton.backgroundTintList = tint
+        importPackButton.backgroundTintList = tint
         removeButton.setStrokeColor(tint)
         removeButton.setTextColor(p.accent)
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
@@ -262,6 +295,7 @@ class MainActivity : AppCompatActivity() {
         switches.forEach { (it as? MaterialSwitch)?.trackTintList = track }
         segments.forEach { it.setStrokeColor(p.stroke) }
         buildSwatches()
+        renderPacks()
         updateCount()
     }
 
@@ -316,8 +350,10 @@ class MainActivity : AppCompatActivity() {
     /**
      * Runs a shell command through Shizuku. stderr is merged into stdout inside the shell so a
      * full stderr buffer can't deadlock us, and a watchdog kills the process after a timeout.
+     * [stdin], when given, is piped to the command (used to write large flag files, which would
+     * not fit in a command-line argument).
      */
-    private fun runShell(cmd: String): String {
+    private fun runShell(cmd: String, stdin: String? = null): String {
         val method = Shizuku::class.java.getDeclaredMethod(
             "newProcess",
             Array<String>::class.java,
@@ -334,6 +370,9 @@ class MainActivity : AppCompatActivity() {
             process.destroy()
         }, shellTimeoutSeconds, TimeUnit.SECONDS)
         try {
+            if (stdin != null) {
+                process.outputStream.use { it.write(stdin.toByteArray()) }
+            }
             val out = process.inputStream.bufferedReader().readText()
             process.waitFor()
             return if (timedOut.get()) out + "\n(timed out after ${shellTimeoutSeconds}s)" else out
@@ -394,6 +433,10 @@ class MainActivity : AppCompatActivity() {
     private fun customKeys(): Set<String> =
         HashSet(prefs.getStringSet("custom_keys", emptySet()) ?: emptySet())
 
+    /** Keys of packs that were deleted but may still be in the flags file until the next Apply. */
+    private fun staleKeys(): Set<String> =
+        HashSet(prefs.getStringSet("stale_keys", emptySet()) ?: emptySet())
+
     private fun readFlagsObject(existing: String): JSONObject =
         try {
             if (existing.isBlank()) JSONObject() else JSONObject(existing)
@@ -404,23 +447,41 @@ class MainActivity : AppCompatActivity() {
     private fun render(obj: JSONObject): String? = if (obj.length() == 0) null else obj.toString(2)
 
     /**
-     * Merges our flags into whatever is already in the flags file: our keys (and [alsoRemove])
-     * are replaced, everything else is preserved. Returns null when nothing is left.
+     * Builds the flags file content from the existing file. Order, lowest priority first:
+     * enabled packs, then custom flags (left in place), then tweaks.
+     * When [removing], every key Stargazer manages (tweaks, packs, custom, stale) is deleted instead.
+     * Keys the user added by hand are never touched. Returns null when nothing is left.
      */
-    private fun mergeJson(existing: String, selected: List<Tweak>, alsoRemove: Set<String> = emptySet()): String? {
+    private fun mergeJson(
+        existing: String,
+        selected: List<Tweak>,
+        packs: List<Pack>,
+        custom: Set<String>,
+        stale: Set<String>,
+        removing: Boolean
+    ): String? {
         val obj = readFlagsObject(existing)
         managedKeys().forEach { obj.remove(it) }
-        alsoRemove.forEach { obj.remove(it) }
-        selected.forEach { t -> t.flags.forEach { (k, v) -> obj.put(k, v) } }
+        stale.forEach { if (it !in custom || removing) obj.remove(it) }
+        packs.forEach { p -> p.keys().forEach { k -> if (k !in custom || removing) obj.remove(k) } }
+        if (removing) {
+            custom.forEach { obj.remove(it) }
+        } else {
+            packs.filter { it.on }.forEach { p ->
+                p.keys().forEach { k -> if (k !in custom) obj.put(k, p.flags.get(k)) }
+            }
+            selected.forEach { t -> t.flags.forEach { (k, v) -> obj.put(k, v) } }
+        }
         return render(obj)
     }
 
-    private fun writeFlagsScript(json: String?): String =
+    /** Writes the flags file by piping the JSON over stdin (no size limit from argv). */
+    private fun writeFlagsFile(json: String?): String =
         if (json == null) {
-            "rm -f $flagsPath\n"
+            runShell("rm -f $flagsPath")
         } else {
-            "cat > $flagsPath.new <<'FASTSTRAP_END'\n$json\nFASTSTRAP_END\n" +
-                "mv -f $flagsPath.new $flagsPath && chmod 0644 $flagsPath\n"
+            runShell("cat > $flagsPath.new", json) +
+                runShell("mv -f $flagsPath.new $flagsPath && chmod 0644 $flagsPath")
         }
 
     private fun applyFlags(restart: Boolean) {
@@ -428,22 +489,25 @@ class MainActivity : AppCompatActivity() {
         tweaks.forEach { editor.putBoolean(it.prefKey, it.toggle.isChecked) }
         editor.apply()
 
-        // Snapshot UI state here; the task runs on a worker thread.
+        // Snapshot UI and pref state here; the task runs on a worker thread.
         val selected = tweaks.filter { it.toggle.isChecked }
         val fpsOn = cbFps.isChecked
+        val packs = loadPacks()
+        val custom = customKeys()
+        val stale = staleKeys()
+        prefs.edit().remove("stale_keys").apply()
+        val activePacks = packs.count { it.on }
 
         runTask {
-            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), selected)
+            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), selected, packs, custom, stale, false)
             val sb = StringBuilder()
-            sb.append(writeFlagsScript(json))
             sb.append(if (fpsOn) fpsOnScript() else fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
-            sb.append("echo 'Applied ${selected.size} tweak(s). " +
+            sb.append("echo 'Applied ${selected.size} tweak(s) and $activePacks pack(s). " +
                 if (restart) "Roblox was restarted.'\n" else "Restart Roblox to use them.'\n")
             sb.append("echo; ls -la $flagsPath 2>&1\n")
-            sb.append("echo; cat $flagsPath 2>&1\n")
             sb.append("echo; echo fps_prop=\$(getprop $fpsProp)\n")
-            runShell(sb.toString())
+            writeFlagsFile(json) + runShell(sb.toString())
         }
     }
 
@@ -460,21 +524,167 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun removeFlags(restart: Boolean) {
-        val custom = customKeys() // snapshot before prefs are cleared
+        // Snapshot before prefs change.
+        val custom = customKeys()
+        val stale = staleKeys()
+        val packs = loadPacks()
+
         switches.forEach { it.isChecked = false }
-        val keepTheme = themeIndex
-        prefs.edit().clear().putInt("theme", keepTheme).apply()
+        val editor = prefs.edit()
+        tweaks.forEach { editor.remove(it.prefKey) }
+        editor.remove("custom_keys").remove("stale_keys").apply()
+        // Packs stay saved but are switched off, so the next Apply won't bring them back.
+        packs.forEach { it.on = false }
+        savePacks(packs)
+        renderPacks()
+
         runTask {
-            // Only Stargazer's own and custom-added keys are removed; flags added by hand stay.
-            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), emptyList(), custom)
+            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), emptyList(), packs, custom, stale, true)
             val sb = StringBuilder()
-            sb.append(writeFlagsScript(json))
             sb.append(fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Stargazer flags removed. " +
                 if (restart) "Roblox was restarted.'" else "Restart Roblox to finish.'")
-            runShell(sb.toString())
+            writeFlagsFile(json) + runShell(sb.toString())
         }
+    }
+
+    // ---- Flag packs (clipboard) ----
+
+    private fun loadPacks(): MutableList<Pack> {
+        val out = mutableListOf<Pack>()
+        val raw = prefs.getString("packs", null) ?: return out
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(Pack(o.getLong("id"), o.getString("name"), o.getBoolean("on"), o.getJSONObject("flags")))
+            }
+        } catch (e: JSONException) {
+            // Corrupt data: start with no packs.
+        }
+        return out
+    }
+
+    private fun savePacks(list: List<Pack>) {
+        val arr = JSONArray()
+        list.forEach {
+            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("on", it.on).put("flags", it.flags))
+        }
+        prefs.edit().putString("packs", arr.toString()).apply()
+    }
+
+    /**
+     * Reads flags out of pasted text. Tries real JSON first; if that fails (for example the file
+     * was cut off while copying) it falls back to picking out every complete "Name": value pair.
+     * Entries with odd names or nested values are skipped.
+     */
+    private fun parseLenient(raw: String): JSONObject? {
+        val out = JSONObject()
+        val text = raw.trim()
+        var parsed: JSONObject? = null
+        try {
+            if (text.startsWith("{")) parsed = JSONObject(text)
+        } catch (e: JSONException) {
+            parsed = null
+        }
+        if (parsed != null) {
+            val it = parsed.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                val v = parsed.get(k)
+                if (flagNameRegex.matches(k) && (v is Boolean || v is Number || v is String)) out.put(k, v)
+            }
+        } else {
+            pairRegex.findAll(text).forEach { m ->
+                val k = m.groupValues[1]
+                val v = m.groupValues[2]
+                val value: Any = when {
+                    v.startsWith("\"") -> v.substring(1, v.length - 1)
+                    v == "true" -> true
+                    v == "false" -> false
+                    v.contains('.') -> v.toDouble()
+                    else -> v.toLongOrNull() ?: v.toDouble()
+                }
+                out.put(k, value)
+            }
+        }
+        return if (out.length() == 0) null else out
+    }
+
+    private fun importPackFromClipboard() {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip
+        val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this).toString() else ""
+        if (text.isBlank()) {
+            toast("The clipboard is empty. Copy a JSON flag file first.")
+            return
+        }
+        if (text.length > maxClipboardChars) {
+            toast("That's too large to import.")
+            return
+        }
+        val flags = parseLenient(text)
+        if (flags == null) {
+            toast("No flags found in the clipboard.")
+            return
+        }
+        val packs = loadPacks()
+        val id = (packs.maxOfOrNull { it.id } ?: 0L) + 1L
+        packs.add(Pack(id, "Pack $id", true, flags))
+        savePacks(packs)
+        renderPacks()
+        toast("Imported ${flags.length()} flags as Pack $id. Tap Apply to use it.")
+    }
+
+    private fun renderPacks() {
+        val p = palettes[themeIndex]
+        val packs = loadPacks()
+        packEmpty.visibility = if (packs.isEmpty()) View.VISIBLE else View.GONE
+        packList.removeAllViews()
+        val d = resources.displayMetrics.density
+        val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+        val track = ColorStateList(states, intArrayOf(p.accent, Color.parseColor("#D1D5DB")))
+        packs.forEach { pack ->
+            val sw = MaterialSwitch(this)
+            sw.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            sw.text = "${pack.name}  \u00b7  ${pack.flags.length()} flags"
+            sw.textSize = 15f
+            sw.setTextColor(Color.parseColor("#111111"))
+            sw.setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
+            sw.trackTintList = track
+            sw.isChecked = pack.on
+            sw.setOnCheckedChangeListener { _, checked -> setPackEnabled(pack.id, checked) }
+            sw.setOnLongClickListener {
+                confirmDeletePack(pack)
+                true
+            }
+            packList.addView(sw)
+        }
+    }
+
+    private fun setPackEnabled(id: Long, on: Boolean) {
+        val packs = loadPacks()
+        packs.firstOrNull { it.id == id }?.on = on
+        savePacks(packs)
+    }
+
+    private fun confirmDeletePack(pack: Pack) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Delete ${pack.name}?")
+            .setMessage("Its flags are removed from Roblox the next time you tap Apply.")
+            .setPositiveButton("Delete") { _, _ ->
+                val packs = loadPacks().filter { it.id != pack.id }
+                savePacks(packs)
+                val stale = HashSet(staleKeys())
+                stale.addAll(pack.keys())
+                prefs.edit().putStringSet("stale_keys", stale).apply()
+                renderPacks()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ---- Custom flags: paste, import, export ----
@@ -532,12 +742,10 @@ class MainActivity : AppCompatActivity() {
             val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
             keys.forEach { k -> merged.put(k, obj.get(k)) }
             val sb = StringBuilder()
-            sb.append(writeFlagsScript(render(merged)))
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Added ${keys.size} custom flag(s). " +
                 if (restart) "Roblox was restarted.'\n" else "Restart Roblox to use them.'\n")
-            sb.append("echo; cat $flagsPath 2>&1\n")
-            runShell(sb.toString())
+            writeFlagsFile(render(merged)) + runShell(sb.toString())
         }
     }
 
