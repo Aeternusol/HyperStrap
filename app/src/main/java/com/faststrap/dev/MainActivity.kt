@@ -1,14 +1,18 @@
 package com.faststrap.dev
 
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.CompoundButton
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
@@ -46,6 +50,9 @@ class MainActivity : AppCompatActivity() {
     private val fpsProp = "debug.graphics.game_default_frame_rate.disabled"
     private val robloxPkg = "com.roblox.client"
     private val shellTimeoutSeconds = 20L
+    private val reqImport = 201
+    private val reqExport = 202
+    private val flagNameRegex = Regex("^[A-Za-z0-9_]+$")
 
     private val palettes = listOf(
         pal("#FFFFFF", "#ECEFFE", "#E5F1F8", "#FBE9EE", "#111111", "#AAB6F5", "#B9C1F2"),
@@ -67,11 +74,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var applyButton: MaterialButton
     private lateinit var viewButton: MaterialButton
     private lateinit var removeButton: MaterialButton
+    private lateinit var addCustomButton: MaterialButton
+    private lateinit var importButton: MaterialButton
+    private lateinit var exportButton: MaterialButton
+    private lateinit var customInput: EditText
     private lateinit var refreshButton: MaterialCardView
     private lateinit var statusCard: MaterialCardView
     private lateinit var heroCard: MaterialCardView
     private lateinit var perfCard: MaterialCardView
     private lateinit var gfxCard: MaterialCardView
+    private lateinit var customCard: MaterialCardView
     private lateinit var swatchRow: LinearLayout
     private lateinit var segRow: LinearLayout
     private lateinit var cbFps: CompoundButton
@@ -109,11 +121,16 @@ class MainActivity : AppCompatActivity() {
         applyButton = findViewById(R.id.applyButton)
         viewButton = findViewById(R.id.viewButton)
         removeButton = findViewById(R.id.removeButton)
+        addCustomButton = findViewById(R.id.addCustomButton)
+        importButton = findViewById(R.id.importButton)
+        exportButton = findViewById(R.id.exportButton)
+        customInput = findViewById(R.id.customInput)
         refreshButton = findViewById(R.id.refreshButton)
         statusCard = findViewById(R.id.statusCard)
         heroCard = findViewById(R.id.heroCard)
         perfCard = findViewById(R.id.perfCard)
         gfxCard = findViewById(R.id.gfxCard)
+        customCard = findViewById(R.id.customCard)
         swatchRow = findViewById(R.id.swatchRow)
         segRow = findViewById(R.id.segRow)
         cbFps = findViewById(R.id.cbFps)
@@ -166,10 +183,13 @@ class MainActivity : AppCompatActivity() {
         }
         viewButton.setOnClickListener { viewFlags() }
         removeButton.setOnClickListener {
-            confirmRestart("Remove all FastStrap flags. Other flags in the file are kept.") {
+            confirmRestart("Remove all Stargazer flags, including custom ones you added here. Flags you added by hand outside the app are kept.") {
                 removeFlags(it)
             }
         }
+        addCustomButton.setOnClickListener { onAddCustomClicked() }
+        importButton.setOnClickListener { startImport() }
+        exportButton.setOnClickListener { startExport() }
         refreshButton.setOnClickListener { updateStatus() }
 
         applyTheme()
@@ -228,11 +248,13 @@ class MainActivity : AppCompatActivity() {
         heroCard.setCardBackgroundColor(p.c1)
         perfCard.setCardBackgroundColor(p.c2)
         gfxCard.setCardBackgroundColor(p.c3)
+        customCard.setCardBackgroundColor(p.c1)
         refreshButton.setCardBackgroundColor(p.accent)
         statusCard.setCardBackgroundColor(p.accent)
         val tint = ColorStateList.valueOf(p.accent)
         requestButton.backgroundTintList = tint
         applyButton.backgroundTintList = tint
+        addCustomButton.backgroundTintList = tint
         removeButton.setStrokeColor(tint)
         removeButton.setTextColor(p.accent)
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
@@ -264,6 +286,9 @@ class MainActivity : AppCompatActivity() {
             false
         }
 
+    private fun toast(message: String) =
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
     private fun updateStatus() = runOnUiThread {
         val alive = Shizuku.pingBinder()
         val ready = hasShizuku()
@@ -274,17 +299,18 @@ class MainActivity : AppCompatActivity() {
         }
         hintText.text = when {
             !alive -> "Open the Shizuku app and tap Start."
-            !ready -> "Allow FastStrap to use Shizuku."
+            !ready -> "Allow Stargazer to use Shizuku."
             !robloxInstalled() -> "Roblox ($robloxPkg) isn't installed."
             else -> ""
         }
         hintText.visibility = if (hintText.text.isEmpty()) View.GONE else View.VISIBLE
         requestButton.visibility = if (alive && !ready) View.VISIBLE else View.GONE
         val enabled = ready && !busy
-        listOf(applyButton, viewButton, removeButton).forEach {
-            it.isEnabled = enabled
-            it.alpha = if (enabled) 1f else 0.4f
-        }
+        listOf(applyButton, viewButton, removeButton, addCustomButton, importButton, exportButton)
+            .forEach {
+                it.isEnabled = enabled
+                it.alpha = if (enabled) 1f else 0.4f
+            }
     }
 
     /**
@@ -364,19 +390,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun managedKeys(): Set<String> = tweaks.flatMap { it.flags.keys }.toSet()
 
-    /**
-     * Merges our flags into whatever is already in the flags file: our keys are replaced,
-     * everything else is preserved. Returns null when nothing is left (file should be deleted).
-     */
-    private fun mergeJson(existing: String, selected: List<Tweak>): String? {
-        val obj = try {
+    /** Keys added through the Custom flags card (paste or import), remembered so Remove can clear them. */
+    private fun customKeys(): Set<String> =
+        HashSet(prefs.getStringSet("custom_keys", emptySet()) ?: emptySet())
+
+    private fun readFlagsObject(existing: String): JSONObject =
+        try {
             if (existing.isBlank()) JSONObject() else JSONObject(existing)
         } catch (e: JSONException) {
             JSONObject()
         }
+
+    private fun render(obj: JSONObject): String? = if (obj.length() == 0) null else obj.toString(2)
+
+    /**
+     * Merges our flags into whatever is already in the flags file: our keys (and [alsoRemove])
+     * are replaced, everything else is preserved. Returns null when nothing is left.
+     */
+    private fun mergeJson(existing: String, selected: List<Tweak>, alsoRemove: Set<String> = emptySet()): String? {
+        val obj = readFlagsObject(existing)
         managedKeys().forEach { obj.remove(it) }
+        alsoRemove.forEach { obj.remove(it) }
         selected.forEach { t -> t.flags.forEach { (k, v) -> obj.put(k, v) } }
-        return if (obj.length() == 0) null else obj.toString(2)
+        return render(obj)
     }
 
     private fun writeFlagsScript(json: String?): String =
@@ -424,19 +460,142 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun removeFlags(restart: Boolean) {
+        val custom = customKeys() // snapshot before prefs are cleared
         switches.forEach { it.isChecked = false }
         val keepTheme = themeIndex
         prefs.edit().clear().putInt("theme", keepTheme).apply()
         runTask {
-            // Only our keys are removed; flags the user added by hand stay.
-            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), emptyList())
+            // Only Stargazer's own and custom-added keys are removed; flags added by hand stay.
+            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), emptyList(), custom)
             val sb = StringBuilder()
             sb.append(writeFlagsScript(json))
             sb.append(fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
-            sb.append("echo 'FastStrap flags removed. " +
+            sb.append("echo 'Stargazer flags removed. " +
                 if (restart) "Roblox was restarted.'" else "Restart Roblox to finish.'")
             runShell(sb.toString())
+        }
+    }
+
+    // ---- Custom flags: paste, import, export ----
+
+    /**
+     * Parses pasted or imported FFlag JSON. Accepts a full object or bare `"Name": value,` lines.
+     * Flag names must be letters, digits or underscores; values must be true/false, a number or a string.
+     */
+    private fun parseFlags(raw: String): JSONObject? {
+        var text = raw.trim().trimEnd(',')
+        if (text.isEmpty()) {
+            toast("Nothing to add.")
+            return null
+        }
+        if (!text.startsWith("{")) text = "{$text}"
+        val obj = try {
+            JSONObject(text)
+        } catch (e: JSONException) {
+            toast("That isn't valid JSON.")
+            return null
+        }
+        if (obj.length() == 0) {
+            toast("No flags found.")
+            return null
+        }
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = obj.get(k)
+            if (!flagNameRegex.matches(k) || !(v is Boolean || v is Number || v is String)) {
+                toast("Unsupported flag: $k")
+                return null
+            }
+        }
+        return obj
+    }
+
+    private fun onAddCustomClicked() {
+        val obj = parseFlags(customInput.text.toString()) ?: return
+        confirmRestart("Add ${obj.length()} custom flag(s) to the flags file.") {
+            customInput.text.clear()
+            addCustomFlags(obj, it)
+        }
+    }
+
+    private fun addCustomFlags(obj: JSONObject, restart: Boolean) {
+        val keys = mutableSetOf<String>()
+        val it = obj.keys()
+        while (it.hasNext()) keys.add(it.next())
+        val custom = HashSet(customKeys())
+        custom.addAll(keys)
+        prefs.edit().putStringSet("custom_keys", custom).apply()
+
+        runTask {
+            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
+            keys.forEach { k -> merged.put(k, obj.get(k)) }
+            val sb = StringBuilder()
+            sb.append(writeFlagsScript(render(merged)))
+            if (restart) sb.append("am force-stop $robloxPkg\n")
+            sb.append("echo 'Added ${keys.size} custom flag(s). " +
+                if (restart) "Roblox was restarted.'\n" else "Restart Roblox to use them.'\n")
+            sb.append("echo; cat $flagsPath 2>&1\n")
+            runShell(sb.toString())
+        }
+    }
+
+    private fun startImport() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain"))
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, reqImport)
+    }
+
+    private fun startExport() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "stargazer-flags.json")
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, reqExport)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            reqImport -> importFrom(uri)
+            reqExport -> exportTo(uri)
+        }
+    }
+
+    private fun importFrom(uri: Uri) {
+        val text = try {
+            contentResolver.openInputStream(uri)?.use { s ->
+                val bytes = s.readBytes()
+                if (bytes.size > 64 * 1024) null else String(bytes)
+            }
+        } catch (e: Exception) {
+            null
+        }
+        if (text == null) {
+            toast("Couldn't read that file (max 64 KB).")
+            return
+        }
+        val obj = parseFlags(text) ?: return
+        confirmRestart("Add ${obj.length()} flag(s) from the file.") { addCustomFlags(obj, it) }
+    }
+
+    private fun exportTo(uri: Uri) {
+        runTask {
+            val text = runShell("cat $flagsPath 2>/dev/null").ifBlank { "{}" }
+            val count = readFlagsObject(text).length()
+            val out = contentResolver.openOutputStream(uri) ?: return@runTask "Couldn't open the file."
+            out.use { it.write(text.toByteArray()) }
+            "Exported $count flag(s)."
         }
     }
 
