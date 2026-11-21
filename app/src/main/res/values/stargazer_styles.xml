@@ -1,0 +1,8 @@
+<resources>
+    <style name="ThemeOverlay.Stargazer.Dialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">#1B1F23</item>
+        <item name="colorOnSurface">#E3E3E3</item>
+        <item name="colorOnSurfaceVariant">#C4C7C5</item>
+        <item name="colorPrimary">#D0BCFF</item>
+    </style>
+</resources>

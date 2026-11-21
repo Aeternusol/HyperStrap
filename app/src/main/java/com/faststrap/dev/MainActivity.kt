@@ -1,21 +1,32 @@
 package com.faststrap.dev
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.CompoundButton
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.ColorUtils
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -27,17 +38,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import rikka.shizuku.Shizuku
-
-class Palette(
-    val bg: Int, val c1: Int, val c2: Int, val c3: Int,
-    val accent: Int, val seg: Int, val stroke: Int
-)
-
-private fun pal(bg: String, c1: String, c2: String, c3: String, accent: String, seg: String, stroke: String) =
-    Palette(
-        Color.parseColor(bg), Color.parseColor(c1), Color.parseColor(c2), Color.parseColor(c3),
-        Color.parseColor(accent), Color.parseColor(seg), Color.parseColor(stroke)
-    )
 
 class MainActivity : AppCompatActivity() {
 
@@ -76,19 +76,30 @@ class MainActivity : AppCompatActivity() {
         "\"([A-Za-z0-9_]+)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|true|false|-?\\d+(?:\\.\\d+)?)"
     )
 
-    private val palettes = listOf(
-        pal("#FFFFFF", "#ECEFFE", "#E5F1F8", "#FBE9EE", "#111111", "#AAB6F5", "#B9C1F2"),
-        pal("#F7FBF8", "#E3F4E8", "#E1F1F0", "#F3F1DD", "#1F3D2B", "#8CCB9B", "#A9D8B5"),
-        pal("#FFFBF8", "#FFE9DC", "#FFF1D9", "#FBE3E8", "#4A2511", "#F4A97F", "#F2BFA0"),
-        pal("#F7FAFD", "#DEEBFB", "#DDF3F6", "#E7E6FA", "#0F2A4A", "#7FB0EA", "#A5C6EE"),
-        pal("#FFF9FB", "#FCE4EC", "#F5E3F6", "#FFE9E3", "#4A1230", "#F08FB3", "#F2B3CB"),
-        pal("#F6F7F9", "#E8EAEE", "#EDEFF2", "#E3E7EC", "#1F2937", "#8E9AAF", "#B4BCC9")
-    )
+    // Dark "AMOLED" look: black background, slate surfaces, one accent color.
+    private val accents = listOf("#D0BCFF", "#A3C7FF", "#A8DAB5", "#FFB59A", "#FFB1C8", "#C4C7C5")
+    private val accentNames = arrayOf("Violet", "Blue", "Green", "Orange", "Pink", "Gray")
+    private val surface = Color.parseColor("#1B1F23")
+    private val textMuted = Color.parseColor("#C4C7C5")
+    private val textPrimary = Color.parseColor("#E3E3E3")
+    private val onAccent = Color.parseColor("#101418")
     private var themeIndex = 0
+    private var tab = 0
+    private val accent: Int get() = Color.parseColor(accents[themeIndex])
+    private val container: Int get() = ColorUtils.blendARGB(surface, accent, 0.35f)
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var root: View
+    private lateinit var mainColumn: LinearLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var root: FrameLayout
+    private lateinit var splash: View
+    private lateinit var splashBadge: View
+    private lateinit var themeButton: MaterialCardView
+    private lateinit var statusPill: MaterialCardView
+    private lateinit var statusDot: View
     private lateinit var statusText: TextView
+    private lateinit var busySpinner: ImageView
+    private lateinit var connectCard: MaterialCardView
     private lateinit var hintText: TextView
     private lateinit var countText: TextView
     private lateinit var outputText: TextView
@@ -102,15 +113,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var importButton: MaterialButton
     private lateinit var exportButton: MaterialButton
     private lateinit var importPackButton: MaterialButton
+    private lateinit var launchButton: MaterialCardView
+    private lateinit var launchIcon: ImageView
     private lateinit var customInput: EditText
-    private lateinit var refreshButton: MaterialCardView
-    private lateinit var statusCard: MaterialCardView
-    private lateinit var heroCard: MaterialCardView
-    private lateinit var perfCard: MaterialCardView
-    private lateinit var gfxCard: MaterialCardView
-    private lateinit var packsCard: MaterialCardView
-    private lateinit var customCard: MaterialCardView
-    private lateinit var swatchRow: LinearLayout
     private lateinit var segRow: LinearLayout
     private lateinit var cbFps: CompoundButton
     private lateinit var cbFpsCounter: CompoundButton
@@ -120,12 +125,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cbTextures: CompoundButton
     private lateinit var switches: List<CompoundButton>
     private lateinit var tweaks: List<Tweak>
+    private lateinit var tabViews: List<View>
+    private lateinit var navItems: List<LinearLayout>
     private val segments = mutableListOf<MaterialCardView>()
 
     // Commands run one at a time off the main thread; the watchdog kills hung processes.
     private val executor = Executors.newSingleThreadExecutor()
     private val watchdog = Executors.newSingleThreadScheduledExecutor()
     private var busy = false
+    private var spinnerAnim: ObjectAnimator? = null
 
     private val permissionListener =
         Shizuku.OnRequestPermissionResultListener { _, _ -> updateStatus() }
@@ -134,12 +142,27 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         setContentView(R.layout.activity_main)
+        val bars = WindowCompat.getInsetsController(window, window.decorView)
+        bars.isAppearanceLightStatusBars = false
+        bars.isAppearanceLightNavigationBars = false
+
         prefs = getSharedPreferences("faststrap", MODE_PRIVATE)
-        themeIndex = prefs.getInt("theme", 0).coerceIn(0, palettes.size - 1)
+        themeIndex = prefs.getInt("theme", 0).coerceIn(0, accents.size - 1)
 
         root = findViewById(R.id.root)
+        mainColumn = findViewById(R.id.mainColumn)
+        bottomBar = findViewById(R.id.bottomBar)
+        splash = findViewById(R.id.splash)
+        splashBadge = findViewById(R.id.splashBadge)
+        themeButton = findViewById(R.id.themeButton)
+        statusPill = findViewById(R.id.statusPill)
+        statusDot = findViewById(R.id.statusDot)
         statusText = findViewById(R.id.statusText)
+        busySpinner = findViewById(R.id.busySpinner)
+        connectCard = findViewById(R.id.connectCard)
         hintText = findViewById(R.id.hintText)
         countText = findViewById(R.id.countText)
         outputText = findViewById(R.id.outputText)
@@ -153,15 +176,9 @@ class MainActivity : AppCompatActivity() {
         importButton = findViewById(R.id.importButton)
         exportButton = findViewById(R.id.exportButton)
         importPackButton = findViewById(R.id.importPackButton)
+        launchButton = findViewById(R.id.launchButton)
+        launchIcon = findViewById(R.id.launchIcon)
         customInput = findViewById(R.id.customInput)
-        refreshButton = findViewById(R.id.refreshButton)
-        statusCard = findViewById(R.id.statusCard)
-        heroCard = findViewById(R.id.heroCard)
-        perfCard = findViewById(R.id.perfCard)
-        gfxCard = findViewById(R.id.gfxCard)
-        packsCard = findViewById(R.id.packsCard)
-        customCard = findViewById(R.id.customCard)
-        swatchRow = findViewById(R.id.swatchRow)
         segRow = findViewById(R.id.segRow)
         cbFps = findViewById(R.id.cbFps)
         cbFpsCounter = findViewById(R.id.cbFpsCounter)
@@ -169,6 +186,26 @@ class MainActivity : AppCompatActivity() {
         cbGrass = findViewById(R.id.cbGrass)
         cbShadows = findViewById(R.id.cbShadows)
         cbTextures = findViewById(R.id.cbTextures)
+        tabViews = listOf(
+            findViewById<View>(R.id.tabTweaks),
+            findViewById<View>(R.id.tabFlags),
+            findViewById<View>(R.id.tabLog)
+        )
+        navItems = listOf(
+            findViewById<LinearLayout>(R.id.navTweaks),
+            findViewById<LinearLayout>(R.id.navFlags),
+            findViewById<LinearLayout>(R.id.navLog)
+        )
+
+        // Keep content clear of the status and navigation bars (edge-to-edge).
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            mainColumn.setPadding(0, sys.top, 0, 0)
+            val lp = bottomBar.layoutParams as FrameLayout.LayoutParams
+            lp.bottomMargin = sys.bottom + dp(16)
+            bottomBar.layoutParams = lp
+            insets
+        }
 
         tweaks = listOf(
             Tweak(
@@ -221,10 +258,29 @@ class MainActivity : AppCompatActivity() {
         importButton.setOnClickListener { startImport() }
         exportButton.setOnClickListener { startExport() }
         importPackButton.setOnClickListener { importPackFromClipboard() }
-        refreshButton.setOnClickListener { updateStatus() }
+        statusPill.setOnClickListener { updateStatus() }
+        themeButton.setOnClickListener { showThemeDialog() }
+        launchButton.setOnClickListener { launchRoblox() }
+        navItems.forEachIndexed { i, item -> item.setOnClickListener { showTab(i) } }
 
         applyTheme()
+        showTab(0)
         updateStatus()
+
+        // Splash: the logo badge fades in, holds briefly, then the app fades in.
+        if (savedInstanceState == null) {
+            splashBadge.scaleX = 0.8f
+            splashBadge.scaleY = 0.8f
+            splashBadge.alpha = 0f
+            splashBadge.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(350).start()
+            splash.postDelayed({
+                splash.animate().alpha(0f).setDuration(300).withEndAction {
+                    splash.visibility = View.GONE
+                }.start()
+            }, 1000)
+        } else {
+            splash.visibility = View.GONE
+        }
     }
 
     override fun onResume() {
@@ -232,79 +288,94 @@ class MainActivity : AppCompatActivity() {
         updateStatus()
     }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun dialog(): MaterialAlertDialogBuilder =
+        MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Stargazer_Dialog)
+
     private fun buildSegments() {
-        val d = resources.displayMetrics.density
         for (i in 0 until 6) {
             val s = MaterialCardView(this)
-            val lp = LinearLayout.LayoutParams(0, (30 * d).toInt(), 1f)
-            if (i < 5) lp.marginEnd = (6 * d).toInt()
+            val lp = LinearLayout.LayoutParams(0, dp(10), 1f)
+            if (i < 5) lp.marginEnd = dp(6)
             s.layoutParams = lp
-            s.radius = 10 * d
+            s.radius = dp(5).toFloat()
             s.cardElevation = 0f
-            s.strokeWidth = (1 * d).toInt().coerceAtLeast(1)
+            s.strokeWidth = dp(1).coerceAtLeast(1)
             segRow.addView(s)
             segments.add(s)
         }
     }
 
-    private fun buildSwatches() {
-        swatchRow.removeAllViews()
-        val d = resources.displayMetrics.density
-        val size = (40 * d).toInt()
-        palettes.forEachIndexed { i, p ->
-            val s = MaterialCardView(this)
-            val lp = LinearLayout.LayoutParams(size, size)
-            lp.marginEnd = (10 * d).toInt()
-            s.layoutParams = lp
-            s.radius = size / 2f
-            s.cardElevation = 0f
-            s.setCardBackgroundColor(p.seg)
-            s.strokeWidth = if (i == themeIndex) (3 * d).toInt() else 0
-            s.setStrokeColor(palettes[themeIndex].accent)
-            s.contentDescription = "Theme ${i + 1}" + if (i == themeIndex) ", selected" else ""
-            s.setOnClickListener {
-                themeIndex = i
-                prefs.edit().putInt("theme", i).apply()
-                applyTheme()
-            }
-            swatchRow.addView(s)
-        }
-    }
+    private fun trackTint(): ColorStateList =
+        ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(accent, Color.parseColor("#3A3F45"))
+        )
 
     private fun applyTheme() {
-        val p = palettes[themeIndex]
-        root.setBackgroundColor(p.bg)
-        window.statusBarColor = p.bg
-        window.navigationBarColor = p.bg
-        heroCard.setCardBackgroundColor(p.c1)
-        perfCard.setCardBackgroundColor(p.c2)
-        gfxCard.setCardBackgroundColor(p.c3)
-        packsCard.setCardBackgroundColor(p.c2)
-        customCard.setCardBackgroundColor(p.c1)
-        refreshButton.setCardBackgroundColor(p.accent)
-        statusCard.setCardBackgroundColor(p.accent)
-        val tint = ColorStateList.valueOf(p.accent)
-        requestButton.backgroundTintList = tint
-        applyButton.backgroundTintList = tint
-        addCustomButton.backgroundTintList = tint
-        importPackButton.backgroundTintList = tint
+        val a = accent
+        val tint = ColorStateList.valueOf(a)
+        themeButton.setCardBackgroundColor(a)
+        listOf(applyButton, requestButton, addCustomButton, importPackButton).forEach {
+            it.backgroundTintList = tint
+            it.setTextColor(onAccent)
+        }
         removeButton.setStrokeColor(tint)
-        removeButton.setTextColor(p.accent)
-        val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
-        val track = ColorStateList(states, intArrayOf(p.accent, Color.parseColor("#D1D5DB")))
-        switches.forEach { (it as? MaterialSwitch)?.trackTintList = track }
-        segments.forEach { it.setStrokeColor(p.stroke) }
-        buildSwatches()
+        removeButton.setTextColor(a)
+        switches.forEach { (it as? MaterialSwitch)?.trackTintList = trackTint() }
+        segments.forEach { it.setStrokeColor(a) }
+        busySpinner.setColorFilter(a)
+        launchButton.setCardBackgroundColor(container)
+        launchIcon.setColorFilter(a)
+        styleNav()
         renderPacks()
         updateCount()
     }
 
+    private fun showThemeDialog() {
+        dialog()
+            .setTitle("Accent color")
+            .setSingleChoiceItems(accentNames, themeIndex) { d, which ->
+                themeIndex = which
+                prefs.edit().putInt("theme", which).apply()
+                applyTheme()
+                d.dismiss()
+            }
+            .show()
+    }
+
+    private fun showTab(index: Int) {
+        tab = index
+        tabViews.forEachIndexed { i, v -> v.visibility = if (i == index) View.VISIBLE else View.GONE }
+        styleNav()
+    }
+
+    /** The selected tab shows its label inside a tonal pill; the others show just an icon. */
+    private fun styleNav() {
+        navItems.forEachIndexed { i, item ->
+            val icon = item.getChildAt(0) as ImageView
+            val label = item.getChildAt(1) as TextView
+            val selected = i == tab
+            label.visibility = if (selected) View.VISIBLE else View.GONE
+            label.setTextColor(accent)
+            icon.setColorFilter(if (selected) accent else textMuted)
+            item.background = if (selected) {
+                GradientDrawable().apply {
+                    cornerRadius = dp(24).toFloat()
+                    setColor(container)
+                }
+            } else {
+                null
+            }
+        }
+    }
+
     private fun updateCount() {
-        val p = palettes[themeIndex]
         val n = switches.count { it.isChecked }
         countText.text = n.toString()
         segments.forEachIndexed { i, s ->
-            s.setCardBackgroundColor(if (i < n) p.seg else Color.TRANSPARENT)
+            s.setCardBackgroundColor(if (i < n) accent else Color.TRANSPARENT)
         }
     }
 
@@ -320,6 +391,15 @@ class MainActivity : AppCompatActivity() {
             false
         }
 
+    private fun launchRoblox() {
+        val intent = packageManager.getLaunchIntentForPackage(robloxPkg)
+        if (intent == null) {
+            toast("Roblox isn't installed.")
+            return
+        }
+        startActivity(intent)
+    }
+
     private fun toast(message: String) =
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
 
@@ -331,13 +411,22 @@ class MainActivity : AppCompatActivity() {
             ready -> "Connected"
             else -> "Permission needed"
         }
+        val dotColor = when {
+            !alive -> Color.parseColor("#FF8A80")
+            ready -> Color.parseColor("#7DDB8E")
+            else -> Color.parseColor("#FFCB6B")
+        }
+        statusDot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(dotColor)
+        }
         hintText.text = when {
             !alive -> "Open the Shizuku app and tap Start."
             !ready -> "Allow Stargazer to use Shizuku."
             !robloxInstalled() -> "Roblox ($robloxPkg) isn't installed."
             else -> ""
         }
-        hintText.visibility = if (hintText.text.isEmpty()) View.GONE else View.VISIBLE
+        connectCard.visibility = if (hintText.text.isEmpty()) View.GONE else View.VISIBLE
         requestButton.visibility = if (alive && !ready) View.VISIBLE else View.GONE
         val enabled = ready && !busy
         listOf(applyButton, viewButton, removeButton, addCustomButton, importButton, exportButton)
@@ -345,6 +434,22 @@ class MainActivity : AppCompatActivity() {
                 it.isEnabled = enabled
                 it.alpha = if (enabled) 1f else 0.4f
             }
+    }
+
+    private fun setBusyUi(on: Boolean) {
+        if (on) {
+            busySpinner.visibility = View.VISIBLE
+            val a = ObjectAnimator.ofFloat(busySpinner, View.ROTATION, 0f, 360f)
+            a.duration = 1400
+            a.repeatCount = ValueAnimator.INFINITE
+            a.interpolator = LinearInterpolator()
+            spinnerAnim = a
+            a.start()
+        } else {
+            spinnerAnim?.cancel()
+            spinnerAnim = null
+            busySpinner.visibility = View.GONE
+        }
     }
 
     /**
@@ -382,11 +487,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Runs [task] off the main thread, disables the buttons meanwhile, then shows its result. */
-    private fun runTask(task: () -> String) {
+    /**
+     * Runs [task] off the main thread, disables the buttons and spins the status icon meanwhile,
+     * then shows its result in the Log tab (and its first line as a toast when [toastResult]).
+     */
+    private fun runTask(toastResult: Boolean = true, task: () -> String) {
         if (busy) return
         busy = true
         outputText.text = "Running..."
+        setBusyUi(true)
         updateStatus()
         executor.execute {
             val result = try {
@@ -397,14 +506,21 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 busy = false
+                setBusyUi(false)
                 outputText.text = result
+                if (toastResult) {
+                    val first = result.lineSequence().firstOrNull { it.isNotBlank() }
+                    if (first != null && first.length < 120) {
+                        Toast.makeText(this, first, Toast.LENGTH_SHORT).show()
+                    }
+                }
                 updateStatus()
             }
         }
     }
 
     private fun confirmRestart(message: String, action: (restart: Boolean) -> Unit) {
-        MaterialAlertDialogBuilder(this)
+        dialog()
             .setTitle("Restart Roblox?")
             .setMessage(message)
             .setPositiveButton("Continue & restart") { _, _ -> action(true) }
@@ -512,7 +628,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun viewFlags() {
-        runTask {
+        showTab(2)
+        runTask(toastResult = false) {
             runShell(
                 "echo '== flags file =='; " +
                     "if [ -f $flagsPath ]; then cat $flagsPath; else echo '(no flags file)'; fi; " +
@@ -638,13 +755,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderPacks() {
-        val p = palettes[themeIndex]
         val packs = loadPacks()
         packEmpty.visibility = if (packs.isEmpty()) View.VISIBLE else View.GONE
         packList.removeAllViews()
-        val d = resources.displayMetrics.density
-        val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
-        val track = ColorStateList(states, intArrayOf(p.accent, Color.parseColor("#D1D5DB")))
         packs.forEach { pack ->
             val sw = MaterialSwitch(this)
             sw.layoutParams = LinearLayout.LayoutParams(
@@ -652,9 +765,9 @@ class MainActivity : AppCompatActivity() {
             )
             sw.text = "${pack.name}  \u00b7  ${pack.flags.length()} flags"
             sw.textSize = 15f
-            sw.setTextColor(Color.parseColor("#111111"))
-            sw.setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
-            sw.trackTintList = track
+            sw.setTextColor(textPrimary)
+            sw.setPadding(0, dp(8), 0, dp(8))
+            sw.trackTintList = trackTint()
             sw.isChecked = pack.on
             sw.setOnCheckedChangeListener { _, checked -> setPackEnabled(pack.id, checked) }
             sw.setOnLongClickListener {
@@ -672,7 +785,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmDeletePack(pack: Pack) {
-        MaterialAlertDialogBuilder(this)
+        dialog()
             .setTitle("Delete ${pack.name}?")
             .setMessage("Its flags are removed from Roblox the next time you tap Apply.")
             .setPositiveButton("Delete") { _, _ ->
@@ -812,6 +925,7 @@ class MainActivity : AppCompatActivity() {
         Shizuku.removeRequestPermissionResultListener(permissionListener)
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
+        spinnerAnim?.cancel()
         executor.shutdownNow()
         watchdog.shutdownNow()
     }
