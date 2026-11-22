@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.faststrap.dev">
 
+    <!-- Only used to download flag files from links you paste (https only) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Lets the app check whether Roblox is installed and launch it (package visibility, Android 11+) -->
     <queries>
         <package android:name="com.roblox.client" />
