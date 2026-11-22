@@ -23,10 +23,21 @@
 
 <FrameLayout android:id="@+id/contentFrame" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
 
+<!-- Tab 0: Tweaks -->
 <ScrollView android:id="@+id/tabTweaks" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never">
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:paddingBottom="128dp">
 
 <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Profiles" android:textColor="#E3E3E3" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Pick a starting point, then tap Apply. Hold one of your own profiles to delete it." android:textColor="#9AA0A6" android:textSize="13sp" />
+<HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:overScrollMode="never" android:scrollbars="none">
+<LinearLayout android:id="@+id/profileRow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" />
+</HorizontalScrollView>
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Tweaks selected" android:textColor="#E3E3E3" android:textSize="16sp" />
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="bottom" android:orientation="horizontal">
@@ -60,8 +71,29 @@
 </LinearLayout>
 </ScrollView>
 
-<ScrollView android:id="@+id/tabFlags" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never" android:visibility="gone">
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:paddingBottom="128dp">
+<!-- Tab 1: Flags (explorer, plus add and import) -->
+<LinearLayout android:id="@+id/tabFlags" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:visibility="gone">
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="48dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="24dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="horizontal" android:padding="4dp">
+<TextView android:id="@+id/segExplorer" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:clickable="true" android:focusable="true" android:fontFamily="sans-serif-medium" android:gravity="center" android:text="Explorer" android:textSize="14sp" />
+<TextView android:id="@+id/segAdd" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:clickable="true" android:focusable="true" android:fontFamily="sans-serif-medium" android:gravity="center" android:text="Add or import" android:textSize="14sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+<FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_marginTop="12dp" android:layout_weight="1">
+
+<LinearLayout android:id="@+id/explorerView" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="52dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="26dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<EditText android:id="@+id/flagSearch" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@null" android:hint="Search flag names and values" android:imeOptions="actionSearch" android:inputType="text|textNoSuggestions" android:maxLines="1" android:paddingStart="20dp" android:paddingEnd="20dp" android:textColor="#E3E3E3" android:textColorHint="#7A8087" android:textSize="15sp" />
+</com.google.android.material.card.MaterialCardView>
+<HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:overScrollMode="never" android:scrollbars="none">
+<LinearLayout android:id="@+id/filterRow" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" />
+</HorizontalScrollView>
+<TextView android:id="@+id/appliedCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginTop="10dp" android:textColor="#9AA0A6" android:textSize="13sp" />
+<androidx.recyclerview.widget.RecyclerView android:id="@+id/flagRecycler" android:layout_width="match_parent" android:layout_height="0dp" android:layout_marginTop="8dp" android:layout_weight="1" android:clipToPadding="false" android:overScrollMode="never" android:paddingBottom="128dp" />
+</LinearLayout>
+
+<ScrollView android:id="@+id/addView" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never" android:visibility="gone">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingBottom="128dp">
 
 <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
@@ -70,6 +102,17 @@
 <TextView android:id="@+id/packEmpty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="No packs yet." android:textColor="#9AA0A6" android:textSize="13sp" />
 <LinearLayout android:id="@+id/packList" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:animateLayoutChanges="true" android:orientation="vertical" />
 <com.google.android.material.button.MaterialButton android:id="@+id/importPackButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Import from clipboard" android:textColor="#101418" app:backgroundTint="#D0BCFF" app:cornerRadius="24dp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Import from a link" android:textColor="#E3E3E3" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="https links only. GitHub file pages and pastebin links are turned into raw links for you." android:textColor="#9AA0A6" android:textSize="13sp" />
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#2A2F35" app:cardCornerRadius="16dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<EditText android:id="@+id/urlInput" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@null" android:fontFamily="monospace" android:hint="https://" android:inputType="textUri" android:maxLines="1" android:padding="14dp" android:textColor="#E3E3E3" android:textColorHint="#7A8087" android:textSize="13sp" />
+</com.google.android.material.card.MaterialCardView>
+<com.google.android.material.button.MaterialButton android:id="@+id/importUrlButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Download as a pack" android:textColor="#101418" app:backgroundTint="#D0BCFF" app:cornerRadius="24dp" />
 </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
 
@@ -91,25 +134,95 @@
 </LinearLayout>
 </ScrollView>
 
-<LinearLayout android:id="@+id/tabApplied" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:visibility="gone">
-<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="52dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="26dp" app:cardElevation="0dp" app:strokeWidth="0dp">
-<EditText android:id="@+id/flagSearch" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@null" android:hint="Search applied flags" android:imeOptions="actionSearch" android:inputType="text|textNoSuggestions" android:maxLines="1" android:paddingStart="20dp" android:paddingEnd="20dp" android:textColor="#E3E3E3" android:textColorHint="#7A8087" android:textSize="15sp" />
-</com.google.android.material.card.MaterialCardView>
-<TextView android:id="@+id/appliedCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginTop="12dp" android:textColor="#9AA0A6" android:textSize="13sp" />
-<androidx.recyclerview.widget.RecyclerView android:id="@+id/flagRecycler" android:layout_width="match_parent" android:layout_height="0dp" android:layout_marginTop="8dp" android:layout_weight="1" android:clipToPadding="false" android:overScrollMode="never" android:paddingBottom="128dp" />
+</FrameLayout>
 </LinearLayout>
 
-<ScrollView android:id="@+id/tabLog" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never" android:visibility="gone">
+<!-- Tab 2: Performance and device -->
+<ScrollView android:id="@+id/tabPerf" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never" android:visibility="gone">
 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:paddingBottom="128dp">
 
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-<com.google.android.material.button.MaterialButton android:id="@+id/viewButton" android:layout_width="0dp" android:layout_height="52dp" android:layout_marginEnd="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="View flags" android:textColor="#E3E3E3" app:backgroundTint="#1B1F23" app:cornerRadius="26dp" />
-<com.google.android.material.button.MaterialButton android:id="@+id/removeButton" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="0dp" android:layout_height="52dp" android:layout_marginStart="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Remove all" android:textColor="#D0BCFF" app:cornerRadius="26dp" app:strokeColor="#D0BCFF" />
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Live performance" android:textColor="#E3E3E3" android:textSize="16sp" />
+<TextView android:id="@+id/perfStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Connect Shizuku to see live stats." android:textColor="#9AA0A6" android:textSize="13sp" />
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="bottom" android:orientation="horizontal">
+<TextView android:id="@+id/fpsText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-light" android:text="—" android:textColor="#FFFFFF" android:textSize="56sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:paddingBottom="12dp" android:text="  FPS" android:textColor="#9AA0A6" android:textSize="18sp" />
+</LinearLayout>
+<TextView android:id="@+id/frameTimeText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No frame data" android:textColor="#9AA0A6" android:textSize="13sp" />
+<com.faststrap.dev.FrameGraphView android:id="@+id/frameGraph" android:layout_width="match_parent" android:layout_height="110dp" android:layout_marginTop="12dp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:orientation="horizontal">
+<com.google.android.material.card.MaterialCardView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginEnd="6dp" android:layout_weight="1" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="24dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CPU (Roblox)" android:textColor="#9AA0A6" android:textSize="12sp" />
+<TextView android:id="@+id/cpuText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="sans-serif-light" android:text="—" android:textColor="#FFFFFF" android:textSize="24sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+<com.google.android.material.card.MaterialCardView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_weight="1" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="24dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="GPU" android:textColor="#9AA0A6" android:textSize="12sp" />
+<TextView android:id="@+id/gpuText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="sans-serif-light" android:text="—" android:textColor="#FFFFFF" android:textSize="24sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+</LinearLayout>
+
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:orientation="horizontal">
+<com.google.android.material.card.MaterialCardView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginEnd="6dp" android:layout_weight="1" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="24dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Memory (Roblox)" android:textColor="#9AA0A6" android:textSize="12sp" />
+<TextView android:id="@+id/ramText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="sans-serif-light" android:text="—" android:textColor="#FFFFFF" android:textSize="24sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+<com.google.android.material.card.MaterialCardView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:layout_weight="1" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="24dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Temperature" android:textColor="#9AA0A6" android:textSize="12sp" />
+<TextView android:id="@+id/tempText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:fontFamily="sans-serif-light" android:text="—" android:textColor="#FFFFFF" android:textSize="24sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
 </LinearLayout>
 
 <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
-<TextView android:id="@+id/outputText" android:layout_width="match_parent" android:layout_height="wrap_content" android:fontFamily="monospace" android:hint="Output appears here." android:minHeight="160dp" android:padding="20dp" android:textColor="#E3E3E3" android:textColorHint="#7A8087" android:textIsSelectable="true" android:textSize="13sp" />
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="Device and Roblox" android:textColor="#E3E3E3" android:textSize="16sp" />
+<TextView android:id="@+id/deviceInfoText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="4dp" android:textColor="#C4C7C5" android:textSize="14sp" />
+</LinearLayout>
 </com.google.android.material.card.MaterialCardView>
+
+</LinearLayout>
+</ScrollView>
+
+<!-- Tab 3: Activity (history, log, remove) -->
+<ScrollView android:id="@+id/tabActivity" android:layout_width="match_parent" android:layout_height="match_parent" android:overScrollMode="never" android:visibility="gone">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="16dp" android:paddingTop="8dp" android:paddingEnd="16dp" android:paddingBottom="128dp">
+
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+<com.google.android.material.button.MaterialButton android:id="@+id/viewButton" android:layout_width="0dp" android:layout_height="52dp" android:layout_marginEnd="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="View flags file" android:textColor="#E3E3E3" app:backgroundTint="#1B1F23" app:cornerRadius="26dp" />
+<com.google.android.material.button.MaterialButton android:id="@+id/undoButton" android:layout_width="0dp" android:layout_height="52dp" android:layout_marginStart="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Undo last change" android:textColor="#E3E3E3" app:backgroundTint="#1B1F23" app:cornerRadius="26dp" />
+</LinearLayout>
+
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="History" android:textColor="#E3E3E3" android:textSize="16sp" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Every change Stargazer makes is saved. Tap one to restore it or compare." android:textColor="#9AA0A6" android:textSize="13sp" />
+<TextView android:id="@+id/historyEmpty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Nothing yet. Changes appear here after you apply flags." android:textColor="#9AA0A6" android:textSize="13sp" />
+<LinearLayout android:id="@+id/historyList" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:orientation="vertical" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:cardBackgroundColor="#1B1F23" app:cardCornerRadius="28dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+<TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:text="Log" android:textColor="#E3E3E3" android:textSize="16sp" />
+<com.google.android.material.button.MaterialButton android:id="@+id/clearLogButton" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="40dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Clear" android:textColor="#D0BCFF" />
+</LinearLayout>
+<TextView android:id="@+id/logText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:fontFamily="monospace" android:hint="No log entries yet." android:minHeight="80dp" android:textColor="#E3E3E3" android:textColorHint="#7A8087" android:textIsSelectable="true" android:textSize="12sp" />
+</LinearLayout>
+</com.google.android.material.card.MaterialCardView>
+
+<com.google.android.material.button.MaterialButton android:id="@+id/removeButton" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="match_parent" android:layout_height="52dp" android:layout_marginTop="12dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Remove all Stargazer flags" android:textColor="#D0BCFF" app:cornerRadius="26dp" app:strokeColor="#D0BCFF" />
 
 </LinearLayout>
 </ScrollView>
@@ -132,13 +245,13 @@
 <ImageView android:layout_width="24dp" android:layout_height="24dp" android:importantForAccessibility="no" android:src="@drawable/ic_flag" />
 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:fontFamily="sans-serif-medium" android:text="Flags" android:textSize="14sp" android:visibility="gone" />
 </LinearLayout>
-<LinearLayout android:id="@+id/navApplied" android:layout_width="wrap_content" android:layout_height="48dp" android:clickable="true" android:contentDescription="Applied" android:focusable="true" android:gravity="center" android:orientation="horizontal" android:paddingStart="12dp" android:paddingEnd="12dp">
-<ImageView android:layout_width="24dp" android:layout_height="24dp" android:importantForAccessibility="no" android:src="@drawable/ic_applied" />
-<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:fontFamily="sans-serif-medium" android:text="Applied" android:textSize="14sp" android:visibility="gone" />
+<LinearLayout android:id="@+id/navPerf" android:layout_width="wrap_content" android:layout_height="48dp" android:clickable="true" android:contentDescription="Performance" android:focusable="true" android:gravity="center" android:orientation="horizontal" android:paddingStart="12dp" android:paddingEnd="12dp">
+<ImageView android:layout_width="24dp" android:layout_height="24dp" android:importantForAccessibility="no" android:src="@drawable/ic_perf" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:fontFamily="sans-serif-medium" android:text="Perf" android:textSize="14sp" android:visibility="gone" />
 </LinearLayout>
-<LinearLayout android:id="@+id/navLog" android:layout_width="wrap_content" android:layout_height="48dp" android:clickable="true" android:contentDescription="Log" android:focusable="true" android:gravity="center" android:orientation="horizontal" android:paddingStart="12dp" android:paddingEnd="12dp">
+<LinearLayout android:id="@+id/navActivity" android:layout_width="wrap_content" android:layout_height="48dp" android:clickable="true" android:contentDescription="Activity" android:focusable="true" android:gravity="center" android:orientation="horizontal" android:paddingStart="12dp" android:paddingEnd="12dp">
 <ImageView android:layout_width="24dp" android:layout_height="24dp" android:importantForAccessibility="no" android:src="@drawable/ic_list" />
-<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:fontFamily="sans-serif-medium" android:text="Log" android:textSize="14sp" android:visibility="gone" />
+<TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:fontFamily="sans-serif-medium" android:text="Activity" android:textSize="14sp" android:visibility="gone" />
 </LinearLayout>
 </LinearLayout>
 </FrameLayout>

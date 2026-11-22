@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="wrap_content" android:overScrollMode="never">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="24dp">
+<TextView android:id="@+id/sheetName" android:layout_width="match_parent" android:layout_height="wrap_content" android:fontFamily="monospace" android:textColor="#FFFFFF" android:textIsSelectable="true" android:textSize="16sp" />
+<TextView android:id="@+id/sheetSub" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="#9AA0A6" android:textSize="13sp" />
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" app:cardBackgroundColor="#2A2F35" app:cardCornerRadius="16dp" app:cardElevation="0dp" app:strokeWidth="0dp">
+<EditText android:id="@+id/sheetValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@null" android:fontFamily="monospace" android:inputType="text|textNoSuggestions" android:maxLines="1" android:padding="14dp" android:textColor="#E3E3E3" android:textSize="15sp" />
+</com.google.android.material.card.MaterialCardView>
+<TextView android:id="@+id/sheetInfo" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:lineSpacingExtra="4dp" android:textColor="#C4C7C5" android:textSize="13sp" />
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:orientation="horizontal">
+<com.google.android.material.button.MaterialButton android:id="@+id/sheetSave" android:layout_width="0dp" android:layout_height="48dp" android:layout_marginEnd="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Save value" android:textColor="#101418" app:backgroundTint="#D0BCFF" app:cornerRadius="24dp" />
+<com.google.android.material.button.MaterialButton android:id="@+id/sheetCopy" android:layout_width="0dp" android:layout_height="48dp" android:layout_marginStart="4dp" android:layout_weight="1" android:insetTop="0dp" android:insetBottom="0dp" android:text="Copy name" android:textColor="#E3E3E3" app:backgroundTint="#2A2F35" app:cornerRadius="24dp" />
+</LinearLayout>
+<com.google.android.material.button.MaterialButton android:id="@+id/sheetDelete" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="8dp" android:insetTop="0dp" android:insetBottom="0dp" android:text="Delete from flags file" android:textColor="#FF8A80" app:cornerRadius="24dp" app:strokeColor="#FF8A80" />
+</LinearLayout>
+</ScrollView>
