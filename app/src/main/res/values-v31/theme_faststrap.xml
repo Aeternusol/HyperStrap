@@ -1,0 +1,16 @@
+<resources>
+    <!-- Android 12+: the system splash shows a slate screen with the plain badge shape,
+         which the in-app splash then morphs into the logo badge. -->
+    <style name="Theme.FastStrap" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#D0BCFF</item>
+        <item name="colorOnPrimary">#381E72</item>
+        <item name="colorSurface">#1B1F23</item>
+        <item name="colorOnSurface">#E3E3E3</item>
+        <item name="android:windowBackground">#1B1F23</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowSplashScreenBackground">#1B1F23</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_cookie</item>
+    </style>
+</resources>

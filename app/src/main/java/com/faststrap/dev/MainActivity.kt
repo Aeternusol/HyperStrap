@@ -1,25 +1,36 @@
 package com.faststrap.dev
 
 import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.animation.ValueAnimator
+import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +38,8 @@ import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -63,6 +76,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** One row of the Applied tab: a flag currently in the flags file and where it came from. */
+    private class FlagRow(val key: String, val value: Any, val source: String)
+
+    private class FlagVH(v: View) : RecyclerView.ViewHolder(v) {
+        val name: TextView = v.findViewById(R.id.flagName)
+        val source: TextView = v.findViewById(R.id.flagSource)
+        val value: TextView = v.findViewById(R.id.flagValue)
+    }
+
+    private inner class FlagAdapter : RecyclerView.Adapter<FlagVH>() {
+        var items: List<FlagRow> = emptyList()
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): FlagVH {
+            val v = LayoutInflater.from(parent.context).inflate(R.layout.item_flag, parent, false)
+            pressable(v)
+            return FlagVH(v)
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        override fun onBindViewHolder(holder: FlagVH, position: Int) {
+            val r = items[position]
+            holder.name.text = r.key
+            holder.source.text = r.source
+            holder.value.text = formatValue(r.value)
+            styleValueChip(holder.value, r.value)
+            holder.itemView.setOnClickListener { showFlagEditor(r) }
+            holder.itemView.animate().cancel()
+            holder.itemView.alpha = 0f
+            holder.itemView.animate().alpha(1f).setStartDelay((position % 10) * 25L).setDuration(200).start()
+        }
+    }
+
     private val flagsPath = "/data/local/tmp/ClientAppSettings.json"
     private val backupPath = "/data/local/tmp/faststrap_refresh_backup"
     private val fpsProp = "debug.graphics.game_default_frame_rate.disabled"
@@ -80,20 +126,29 @@ class MainActivity : AppCompatActivity() {
     private val accents = listOf("#D0BCFF", "#A3C7FF", "#A8DAB5", "#FFB59A", "#FFB1C8", "#C4C7C5")
     private val accentNames = arrayOf("Violet", "Blue", "Green", "Orange", "Pink", "Gray")
     private val surface = Color.parseColor("#1B1F23")
+    private val surfaceHigh = Color.parseColor("#2A2F35")
     private val textMuted = Color.parseColor("#C4C7C5")
     private val textPrimary = Color.parseColor("#E3E3E3")
     private val onAccent = Color.parseColor("#101418")
     private var themeIndex = 0
     private var tab = 0
+    private var lastCount = -1
     private val accent: Int get() = Color.parseColor(accents[themeIndex])
     private val container: Int get() = ColorUtils.blendARGB(surface, accent, 0.35f)
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var mainColumn: LinearLayout
-    private lateinit var bottomBar: LinearLayout
     private lateinit var root: FrameLayout
+    private lateinit var mainColumn: LinearLayout
+    private lateinit var topBar: View
+    private lateinit var contentFrame: View
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var bottomScrim: View
+    private lateinit var navRow: LinearLayout
+    private lateinit var navIndicator: View
     private lateinit var splash: View
-    private lateinit var splashBadge: View
+    private lateinit var splashGroup: View
+    private lateinit var splashCookie: View
+    private lateinit var splashLogo: View
     private lateinit var themeButton: MaterialCardView
     private lateinit var statusPill: MaterialCardView
     private lateinit var statusDot: View
@@ -105,6 +160,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var outputText: TextView
     private lateinit var packEmpty: TextView
     private lateinit var packList: LinearLayout
+    private lateinit var appliedCount: TextView
+    private lateinit var flagSearch: EditText
+    private lateinit var flagRecycler: RecyclerView
     private lateinit var requestButton: MaterialButton
     private lateinit var applyButton: MaterialButton
     private lateinit var viewButton: MaterialButton
@@ -128,6 +186,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tabViews: List<View>
     private lateinit var navItems: List<LinearLayout>
     private val segments = mutableListOf<MaterialCardView>()
+    private val flagAdapter = FlagAdapter()
+    private var appliedAll: List<FlagRow> = emptyList()
+
+    // Sliding nav indicator state.
+    private var indLeft = 0f
+    private var indRight = 0f
+    private var indReady = false
+    private var animL: ValueAnimator? = null
+    private var animR: ValueAnimator? = null
 
     // Commands run one at a time off the main thread; the watchdog kills hung processes.
     private val executor = Executors.newSingleThreadExecutor()
@@ -143,7 +210,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         setContentView(R.layout.activity_main)
         val bars = WindowCompat.getInsetsController(window, window.decorView)
         bars.isAppearanceLightStatusBars = false
@@ -154,9 +220,16 @@ class MainActivity : AppCompatActivity() {
 
         root = findViewById(R.id.root)
         mainColumn = findViewById(R.id.mainColumn)
+        topBar = findViewById(R.id.topBar)
+        contentFrame = findViewById(R.id.contentFrame)
         bottomBar = findViewById(R.id.bottomBar)
+        bottomScrim = findViewById(R.id.bottomScrim)
+        navRow = findViewById(R.id.navRow)
+        navIndicator = findViewById(R.id.navIndicator)
         splash = findViewById(R.id.splash)
-        splashBadge = findViewById(R.id.splashBadge)
+        splashGroup = findViewById(R.id.splashGroup)
+        splashCookie = findViewById(R.id.splashCookie)
+        splashLogo = findViewById(R.id.splashLogo)
         themeButton = findViewById(R.id.themeButton)
         statusPill = findViewById(R.id.statusPill)
         statusDot = findViewById(R.id.statusDot)
@@ -168,6 +241,9 @@ class MainActivity : AppCompatActivity() {
         outputText = findViewById(R.id.outputText)
         packEmpty = findViewById(R.id.packEmpty)
         packList = findViewById(R.id.packList)
+        appliedCount = findViewById(R.id.appliedCount)
+        flagSearch = findViewById(R.id.flagSearch)
+        flagRecycler = findViewById(R.id.flagRecycler)
         requestButton = findViewById(R.id.requestButton)
         applyButton = findViewById(R.id.applyButton)
         viewButton = findViewById(R.id.viewButton)
@@ -189,12 +265,19 @@ class MainActivity : AppCompatActivity() {
         tabViews = listOf(
             findViewById<View>(R.id.tabTweaks),
             findViewById<View>(R.id.tabFlags),
+            findViewById<View>(R.id.tabApplied),
             findViewById<View>(R.id.tabLog)
         )
         navItems = listOf(
             findViewById<LinearLayout>(R.id.navTweaks),
             findViewById<LinearLayout>(R.id.navFlags),
+            findViewById<LinearLayout>(R.id.navApplied),
             findViewById<LinearLayout>(R.id.navLog)
+        )
+
+        bottomScrim.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.TRANSPARENT, Color.BLACK)
         )
 
         // Keep content clear of the status and navigation bars (edge-to-edge).
@@ -204,6 +287,9 @@ class MainActivity : AppCompatActivity() {
             val lp = bottomBar.layoutParams as FrameLayout.LayoutParams
             lp.bottomMargin = sys.bottom + dp(16)
             bottomBar.layoutParams = lp
+            val sp = bottomScrim.layoutParams
+            sp.height = dp(150) + sys.bottom
+            bottomScrim.layoutParams = sp
             insets
         }
 
@@ -238,6 +324,17 @@ class MainActivity : AppCompatActivity() {
         tweaks.forEach { it.toggle.isChecked = prefs.getBoolean(it.prefKey, false) }
         switches.forEach { it.setOnCheckedChangeListener { _, _ -> updateCount() } }
 
+        flagRecycler.layoutManager = LinearLayoutManager(this)
+        flagRecycler.adapter = flagAdapter
+        flagSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                filterApplied()
+            }
+
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
         Shizuku.addRequestPermissionResultListener(permissionListener)
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
@@ -250,7 +347,7 @@ class MainActivity : AppCompatActivity() {
         }
         viewButton.setOnClickListener { viewFlags() }
         removeButton.setOnClickListener {
-            confirmRestart("Remove all Stargazer flags, including packs and custom flags added here. Flags you added by hand outside the app are kept.") {
+            confirmRestart("Remove all Stargazer flags, including packs, edits and custom flags added here. Flags you added by hand outside the app are kept.") {
                 removeFlags(it)
             }
         }
@@ -260,24 +357,26 @@ class MainActivity : AppCompatActivity() {
         importPackButton.setOnClickListener { importPackFromClipboard() }
         statusPill.setOnClickListener { updateStatus() }
         themeButton.setOnClickListener { showThemeDialog() }
-        launchButton.setOnClickListener { launchRoblox() }
+        launchButton.setOnClickListener {
+            launchIcon.animate().rotationBy(360f).setDuration(380)
+                .setInterpolator(DecelerateInterpolator()).start()
+            launchButton.postDelayed({ launchRoblox() }, 220)
+        }
         navItems.forEachIndexed { i, item -> item.setOnClickListener { showTab(i) } }
 
+        // Every tappable thing squishes slightly when pressed.
+        listOf<View>(
+            themeButton, statusPill, launchButton, applyButton, requestButton, viewButton,
+            removeButton, addCustomButton, importButton, exportButton, importPackButton
+        ).forEach { pressable(it) }
+        navItems.forEach { pressable(it) }
+
         applyTheme()
-        showTab(0)
+        showTab(0, false)
         updateStatus()
 
-        // Splash: the logo badge fades in, holds briefly, then the app fades in.
         if (savedInstanceState == null) {
-            splashBadge.scaleX = 0.8f
-            splashBadge.scaleY = 0.8f
-            splashBadge.alpha = 0f
-            splashBadge.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(350).start()
-            splash.postDelayed({
-                splash.animate().alpha(0f).setDuration(300).withEndAction {
-                    splash.visibility = View.GONE
-                }.start()
-            }, 1000)
+            playIntro()
         } else {
             splash.visibility = View.GONE
         }
@@ -292,6 +391,243 @@ class MainActivity : AppCompatActivity() {
 
     private fun dialog(): MaterialAlertDialogBuilder =
         MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Stargazer_Dialog)
+
+    // ---- Animations ----
+
+    /** Squishes a view while it is pressed and springs back on release. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun pressable(v: View) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(240)
+                        .setInterpolator(OvershootInterpolator(2.5f)).start()
+            }
+            false
+        }
+    }
+
+    /**
+     * Opening sequence, modeled on the system splash: the plain badge shape is already on screen
+     * (slate background), then it turns while the logo pops in, holds, and shrinks away as the
+     * top bar, content and navigation bar slide into place.
+     */
+    private fun playIntro() {
+        topBar.alpha = 0f
+        topBar.translationY = -dp(24).toFloat()
+        contentFrame.alpha = 0f
+        contentFrame.translationY = dp(32).toFloat()
+        bottomScrim.alpha = 0f
+        bottomBar.alpha = 0f
+        bottomBar.translationY = dp(120).toFloat()
+        launchButton.scaleX = 0f
+        launchButton.scaleY = 0f
+        splashLogo.alpha = 0f
+        splashLogo.scaleX = 0.5f
+        splashLogo.scaleY = 0.5f
+        splashLogo.rotation = -40f
+
+        splashCookie.animate().rotation(120f).setDuration(650)
+            .setInterpolator(OvershootInterpolator(0.8f)).start()
+        splashLogo.animate().alpha(1f).scaleX(1f).scaleY(1f).rotation(0f)
+            .setStartDelay(120).setDuration(520)
+            .setInterpolator(OvershootInterpolator(1.1f)).start()
+        // A small squash and stretch makes the badge feel alive while it holds.
+        ObjectAnimator.ofPropertyValuesHolder(
+            splashCookie,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.08f, 1f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 0.94f, 1f)
+        ).apply {
+            duration = 600
+            startDelay = 350
+            start()
+        }
+
+        splashGroup.postDelayed({
+            if (isDestroyed) return@postDelayed
+            splashGroup.animate().scaleX(0.7f).scaleY(0.7f).alpha(0f).setDuration(260)
+                .setInterpolator(AccelerateInterpolator()).start()
+            splash.animate().alpha(0f).setStartDelay(60).setDuration(320).withEndAction {
+                splash.visibility = View.GONE
+            }.start()
+            topBar.animate().alpha(1f).translationY(0f).setStartDelay(120).setDuration(380)
+                .setInterpolator(DecelerateInterpolator(1.6f)).start()
+            contentFrame.animate().alpha(1f).translationY(0f).setStartDelay(180).setDuration(420)
+                .setInterpolator(DecelerateInterpolator(1.6f)).start()
+            bottomScrim.animate().alpha(1f).setStartDelay(200).setDuration(400).start()
+            bottomBar.animate().alpha(1f).translationY(0f).setStartDelay(220).setDuration(520)
+                .setInterpolator(OvershootInterpolator(0.9f)).start()
+            launchButton.animate().scaleX(1f).scaleY(1f).setStartDelay(420).setDuration(380)
+                .setInterpolator(OvershootInterpolator(2f)).start()
+        }, 1150)
+    }
+
+    /** Children of a tab rise and fade in one after another. */
+    private fun staggerIn(tabView: View) {
+        val group: ViewGroup? =
+            if (tabView is ScrollView) tabView.getChildAt(0) as? ViewGroup else tabView as? ViewGroup
+        if (group == null) return
+        for (i in 0 until group.childCount) {
+            val c = group.getChildAt(i)
+            c.animate().cancel()
+            c.alpha = 0f
+            c.translationY = dp(18).toFloat()
+            c.animate().alpha(1f).translationY(0f).setStartDelay(50L + i * 45L).setDuration(300)
+                .setInterpolator(DecelerateInterpolator(1.5f)).start()
+        }
+    }
+
+    private fun setBusyUi(on: Boolean) {
+        if (on) {
+            busySpinner.visibility = View.VISIBLE
+            val a = ObjectAnimator.ofPropertyValuesHolder(
+                busySpinner,
+                PropertyValuesHolder.ofFloat(View.ROTATION, 0f, 360f),
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 0.75f, 1f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 0.75f, 1f)
+            )
+            a.duration = 1200
+            a.repeatCount = ValueAnimator.INFINITE
+            a.interpolator = LinearInterpolator()
+            spinnerAnim = a
+            a.start()
+        } else {
+            spinnerAnim?.cancel()
+            spinnerAnim = null
+            busySpinner.scaleX = 1f
+            busySpinner.scaleY = 1f
+            busySpinner.visibility = View.GONE
+        }
+    }
+
+    // ---- Tabs and the sliding navigation pill ----
+
+    private fun showTab(index: Int, animate: Boolean = true) {
+        val from = tab
+        if (!animate || index == from) {
+            tabViews.forEachIndexed { i, v ->
+                v.visibility = if (i == index) View.VISIBLE else View.GONE
+                v.alpha = 1f
+            }
+        } else {
+            val out = tabViews[from]
+            val inn = tabViews[index]
+            out.animate().cancel()
+            inn.animate().cancel()
+            out.animate().alpha(0f).setDuration(140).start()
+            inn.alpha = 0f
+            inn.visibility = View.VISIBLE
+            inn.animate().alpha(1f).setStartDelay(80).setDuration(200).start()
+            staggerIn(inn)
+            // Hide whatever is no longer selected once the cross-fade is over.
+            root.postDelayed({
+                tabViews.forEachIndexed { i, v ->
+                    if (i != tab) {
+                        v.visibility = View.GONE
+                        v.alpha = 1f
+                    }
+                }
+            }, 300)
+        }
+        tab = index
+        if (index == 2) refreshApplied()
+        updateNav(animate && from != index)
+    }
+
+    /** Forces a layout pass so the new item positions are known right away. */
+    private fun relayoutNav() {
+        navRow.measure(
+            View.MeasureSpec.makeMeasureSpec(navRow.width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(navRow.height, View.MeasureSpec.EXACTLY)
+        )
+        navRow.layout(navRow.left, navRow.top, navRow.right, navRow.bottom)
+    }
+
+    private fun navBounds(i: Int): Pair<Float, Float> {
+        val item = navItems[i]
+        return Pair((navRow.left + item.left).toFloat(), (navRow.left + item.right).toFloat())
+    }
+
+    /**
+     * The selected tab shows its label; the tonal pill behind it slides to it, stretching like a
+     * drop (the leading edge moves first), and the other icons glide into their new places.
+     */
+    private fun updateNav(animate: Boolean) {
+        val oldLefts = navItems.map { it.left }
+        navItems.forEachIndexed { i, item ->
+            val icon = item.getChildAt(0) as ImageView
+            val label = item.getChildAt(1) as TextView
+            val selected = i == tab
+            label.visibility = if (selected) View.VISIBLE else View.GONE
+            label.setTextColor(accent)
+            icon.setColorFilter(if (selected) accent else textMuted)
+        }
+        if (navRow.width == 0) {
+            navRow.post { snapIndicator() }
+            return
+        }
+        relayoutNav()
+        if (animate) {
+            val newLefts = navItems.map { it.left }
+            navItems.forEachIndexed { i, item ->
+                item.animate().cancel()
+                item.translationX = (oldLefts[i] - newLefts[i]).toFloat()
+                item.animate().translationX(0f).setDuration(340)
+                    .setInterpolator(OvershootInterpolator(0.7f)).start()
+            }
+            val label = navItems[tab].getChildAt(1) as TextView
+            label.alpha = 0f
+            label.animate().alpha(1f).setStartDelay(120).setDuration(200).start()
+        }
+        val (l, r) = navBounds(tab)
+        animateIndicatorTo(l, r, animate)
+    }
+
+    private fun snapIndicator() {
+        relayoutNav()
+        val (l, r) = navBounds(tab)
+        animateIndicatorTo(l, r, false)
+    }
+
+    private fun setIndicator(l: Float, r: Float) {
+        indLeft = l
+        indRight = r
+        val lp = navIndicator.layoutParams
+        lp.width = (r - l).toInt().coerceAtLeast(dp(40))
+        navIndicator.layoutParams = lp
+        navIndicator.translationX = l
+    }
+
+    private fun animateIndicatorTo(nl: Float, nr: Float, animate: Boolean) {
+        animL?.cancel()
+        animR?.cancel()
+        if (!animate || !indReady) {
+            setIndicator(nl, nr)
+            indReady = true
+            return
+        }
+        val sl = indLeft
+        val sr = indRight
+        val movingRight = nl > sl
+        val dl = if (movingRight) 380L else 260L
+        val dr = if (movingRight) 260L else 380L
+        animL = ValueAnimator.ofFloat(sl, nl).apply {
+            duration = dl
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { setIndicator(it.animatedValue as Float, indRight) }
+            start()
+        }
+        animR = ValueAnimator.ofFloat(sr, nr).apply {
+            duration = dr
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { setIndicator(indLeft, it.animatedValue as Float) }
+            start()
+        }
+    }
+
+    // ---- Theme ----
 
     private fun buildSegments() {
         for (i in 0 until 6) {
@@ -328,9 +664,14 @@ class MainActivity : AppCompatActivity() {
         busySpinner.setColorFilter(a)
         launchButton.setCardBackgroundColor(container)
         launchIcon.setColorFilter(a)
-        styleNav()
+        navIndicator.background = GradientDrawable().apply {
+            cornerRadius = dp(24).toFloat()
+            setColor(container)
+        }
+        updateNav(false)
         renderPacks()
         updateCount()
+        flagAdapter.notifyDataSetChanged()
     }
 
     private fun showThemeDialog() {
@@ -345,39 +686,33 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showTab(index: Int) {
-        tab = index
-        tabViews.forEachIndexed { i, v -> v.visibility = if (i == index) View.VISIBLE else View.GONE }
-        styleNav()
-    }
-
-    /** The selected tab shows its label inside a tonal pill; the others show just an icon. */
-    private fun styleNav() {
-        navItems.forEachIndexed { i, item ->
-            val icon = item.getChildAt(0) as ImageView
-            val label = item.getChildAt(1) as TextView
-            val selected = i == tab
-            label.visibility = if (selected) View.VISIBLE else View.GONE
-            label.setTextColor(accent)
-            icon.setColorFilter(if (selected) accent else textMuted)
-            item.background = if (selected) {
-                GradientDrawable().apply {
-                    cornerRadius = dp(24).toFloat()
-                    setColor(container)
-                }
-            } else {
-                null
-            }
-        }
-    }
-
     private fun updateCount() {
         val n = switches.count { it.isChecked }
         countText.text = n.toString()
         segments.forEachIndexed { i, s ->
             s.setCardBackgroundColor(if (i < n) accent else Color.TRANSPARENT)
         }
+        if (lastCount >= 0 && n != lastCount) {
+            // The number pops and the segment that changed springs in.
+            countText.animate().cancel()
+            countText.pivotX = 0f
+            countText.pivotY = countText.height.toFloat()
+            countText.scaleX = 1.2f
+            countText.scaleY = 1.2f
+            countText.animate().scaleX(1f).scaleY(1f).setDuration(280)
+                .setInterpolator(OvershootInterpolator(2f)).start()
+            val idx = if (n > lastCount) n - 1 else n
+            segments.getOrNull(idx)?.let { s ->
+                s.pivotX = 0f
+                s.scaleX = 0.2f
+                s.animate().scaleX(1f).setDuration(280)
+                    .setInterpolator(OvershootInterpolator(1.5f)).start()
+            }
+        }
+        lastCount = n
     }
+
+    // ---- Status and shell ----
 
     private fun hasShizuku(): Boolean =
         Shizuku.pingBinder() &&
@@ -434,22 +769,7 @@ class MainActivity : AppCompatActivity() {
                 it.isEnabled = enabled
                 it.alpha = if (enabled) 1f else 0.4f
             }
-    }
-
-    private fun setBusyUi(on: Boolean) {
-        if (on) {
-            busySpinner.visibility = View.VISIBLE
-            val a = ObjectAnimator.ofFloat(busySpinner, View.ROTATION, 0f, 360f)
-            a.duration = 1400
-            a.repeatCount = ValueAnimator.INFINITE
-            a.interpolator = LinearInterpolator()
-            spinnerAnim = a
-            a.start()
-        } else {
-            spinnerAnim?.cancel()
-            spinnerAnim = null
-            busySpinner.visibility = View.GONE
-        }
+        if (tab == 2) refreshApplied()
     }
 
     /**
@@ -492,7 +812,10 @@ class MainActivity : AppCompatActivity() {
      * then shows its result in the Log tab (and its first line as a toast when [toastResult]).
      */
     private fun runTask(toastResult: Boolean = true, task: () -> String) {
-        if (busy) return
+        if (busy) {
+            toast("Still working, try again in a moment.")
+            return
+        }
         busy = true
         outputText.text = "Running..."
         setBusyUi(true)
@@ -553,6 +876,25 @@ class MainActivity : AppCompatActivity() {
     private fun staleKeys(): Set<String> =
         HashSet(prefs.getStringSet("stale_keys", emptySet()) ?: emptySet())
 
+    /** Values edited in the Applied tab. They are applied last, so they win over tweaks and packs. */
+    private fun loadOverrides(): JSONObject =
+        try {
+            JSONObject(prefs.getString("overrides", "{}") ?: "{}")
+        } catch (e: JSONException) {
+            JSONObject()
+        }
+
+    private fun saveOverrides(o: JSONObject) {
+        prefs.edit().putString("overrides", o.toString()).apply()
+    }
+
+    private fun jsonKeys(o: JSONObject): List<String> {
+        val out = mutableListOf<String>()
+        val it = o.keys()
+        while (it.hasNext()) out.add(it.next())
+        return out
+    }
+
     private fun readFlagsObject(existing: String): JSONObject =
         try {
             if (existing.isBlank()) JSONObject() else JSONObject(existing)
@@ -564,9 +906,10 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Builds the flags file content from the existing file. Order, lowest priority first:
-     * enabled packs, then custom flags (left in place), then tweaks.
-     * When [removing], every key Stargazer manages (tweaks, packs, custom, stale) is deleted instead.
-     * Keys the user added by hand are never touched. Returns null when nothing is left.
+     * enabled packs, then custom flags (left in place), then tweaks, then edited values.
+     * When [removing], every key Stargazer manages (tweaks, packs, custom, edited, stale) is
+     * deleted instead. Keys the user added by hand are never touched.
+     * Returns null when nothing is left.
      */
     private fun mergeJson(
         existing: String,
@@ -574,6 +917,7 @@ class MainActivity : AppCompatActivity() {
         packs: List<Pack>,
         custom: Set<String>,
         stale: Set<String>,
+        overrides: JSONObject,
         removing: Boolean
     ): String? {
         val obj = readFlagsObject(existing)
@@ -582,11 +926,13 @@ class MainActivity : AppCompatActivity() {
         packs.forEach { p -> p.keys().forEach { k -> if (k !in custom || removing) obj.remove(k) } }
         if (removing) {
             custom.forEach { obj.remove(it) }
+            jsonKeys(overrides).forEach { obj.remove(it) }
         } else {
             packs.filter { it.on }.forEach { p ->
                 p.keys().forEach { k -> if (k !in custom) obj.put(k, p.flags.get(k)) }
             }
             selected.forEach { t -> t.flags.forEach { (k, v) -> obj.put(k, v) } }
+            jsonKeys(overrides).forEach { k -> obj.put(k, overrides.get(k)) }
         }
         return render(obj)
     }
@@ -611,11 +957,14 @@ class MainActivity : AppCompatActivity() {
         val packs = loadPacks()
         val custom = customKeys()
         val stale = staleKeys()
+        val overrides = loadOverrides()
         prefs.edit().remove("stale_keys").apply()
         val activePacks = packs.count { it.on }
 
         runTask {
-            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), selected, packs, custom, stale, false)
+            val json = mergeJson(
+                runShell("cat $flagsPath 2>/dev/null"), selected, packs, custom, stale, overrides, false
+            )
             val sb = StringBuilder()
             sb.append(if (fpsOn) fpsOnScript() else fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
@@ -628,7 +977,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun viewFlags() {
-        showTab(2)
+        showTab(3)
         runTask(toastResult = false) {
             runShell(
                 "echo '== flags file =='; " +
@@ -645,24 +994,172 @@ class MainActivity : AppCompatActivity() {
         val custom = customKeys()
         val stale = staleKeys()
         val packs = loadPacks()
+        val overrides = loadOverrides()
 
         switches.forEach { it.isChecked = false }
         val editor = prefs.edit()
         tweaks.forEach { editor.remove(it.prefKey) }
-        editor.remove("custom_keys").remove("stale_keys").apply()
+        editor.remove("custom_keys").remove("stale_keys").remove("overrides").apply()
         // Packs stay saved but are switched off, so the next Apply won't bring them back.
         packs.forEach { it.on = false }
         savePacks(packs)
         renderPacks()
 
         runTask {
-            val json = mergeJson(runShell("cat $flagsPath 2>/dev/null"), emptyList(), packs, custom, stale, true)
+            val json = mergeJson(
+                runShell("cat $flagsPath 2>/dev/null"), emptyList(), packs, custom, stale, overrides, true
+            )
             val sb = StringBuilder()
             sb.append(fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Stargazer flags removed. " +
                 if (restart) "Roblox was restarted.'" else "Restart Roblox to finish.'")
             writeFlagsFile(json) + runShell(sb.toString())
+        }
+    }
+
+    // ---- Applied flags: see every flag in the file, tap one to edit it ----
+
+    private fun formatValue(v: Any): String = if (v is String) "\"$v\"" else v.toString()
+
+    private fun valueToText(v: Any): String = if (v is String) v else v.toString()
+
+    /** true/false, whole numbers and decimals keep their type; anything else is stored as text. */
+    private fun parseValue(raw: String): Any {
+        val t = raw.trim()
+        if (t == "true") return true
+        if (t == "false") return false
+        t.toLongOrNull()?.let { return it }
+        t.toDoubleOrNull()?.let { if (it.isFinite()) return it }
+        if (t.length >= 2 && t.startsWith("\"") && t.endsWith("\"")) return t.substring(1, t.length - 1)
+        return t
+    }
+
+    private fun styleValueChip(tv: TextView, value: Any) {
+        val on = value == true
+        tv.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            setColor(if (on) container else surfaceHigh)
+        }
+        tv.setTextColor(if (on) accent else textPrimary)
+    }
+
+    private fun sourceOf(
+        key: String,
+        overrides: Set<String>,
+        custom: Set<String>,
+        packs: List<Pack>
+    ): String = when {
+        key in overrides -> "Edited"
+        key in managedKeys() -> "Tweak"
+        key in custom -> "Custom"
+        else -> packs.firstOrNull { key in it.keys() }?.name ?: "Other (not set by Stargazer)"
+    }
+
+    /** Reads the flags file and refreshes the Applied tab. */
+    private fun refreshApplied() {
+        if (!hasShizuku()) {
+            appliedAll = emptyList()
+            filterApplied()
+            return
+        }
+        val overrides = jsonKeys(loadOverrides()).toSet()
+        val custom = customKeys()
+        val packs = loadPacks()
+        executor.execute {
+            val text = try {
+                runShell("cat $flagsPath 2>/dev/null")
+            } catch (e: Exception) {
+                ""
+            }
+            val obj = readFlagsObject(text)
+            val rows = jsonKeys(obj)
+                .map { k -> FlagRow(k, obj.get(k), sourceOf(k, overrides, custom, packs)) }
+                .sortedBy { it.key.lowercase() }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                appliedAll = rows
+                filterApplied()
+            }
+        }
+    }
+
+    private fun filterApplied() {
+        val q = flagSearch.text.toString().trim().lowercase()
+        val list = if (q.isEmpty()) {
+            appliedAll
+        } else {
+            appliedAll.filter {
+                it.key.lowercase().contains(q) || formatValue(it.value).lowercase().contains(q)
+            }
+        }
+        flagAdapter.items = list
+        flagAdapter.notifyDataSetChanged()
+        appliedCount.text = when {
+            !hasShizuku() -> "Connect Shizuku to see applied flags."
+            appliedAll.isEmpty() -> "No flags applied yet."
+            q.isEmpty() -> "${appliedAll.size} flags \u00b7 tap one to edit"
+            else -> "${list.size} of ${appliedAll.size} flags"
+        }
+    }
+
+    private fun showFlagEditor(row: FlagRow) {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        val input = EditText(this)
+        input.setText(valueToText(row.value))
+        input.setSelectAllOnFocus(true)
+        input.typeface = Typeface.MONOSPACE
+        input.setTextColor(textPrimary)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        val wrap = FrameLayout(this)
+        wrap.setPadding(dp(24), dp(8), dp(24), 0)
+        wrap.addView(input)
+        val note = when (row.source) {
+            "Edited" -> "You edited this. Your value is kept when you tap Apply."
+            "Tweak" -> "Set by a tweak. Your edit is kept when you tap Apply."
+            else -> "Source: ${row.source}. Use true, false, a number, or text."
+        }
+        dialog()
+            .setTitle(row.key)
+            .setMessage(note)
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ -> saveFlagValue(row, input.text.toString()) }
+            .setNeutralButton("Delete") { _, _ -> deleteFlag(row) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun saveFlagValue(row: FlagRow, text: String) {
+        if (text.isBlank()) {
+            toast("Enter a value.")
+            return
+        }
+        val value = parseValue(text)
+        val ov = loadOverrides()
+        ov.put(row.key, value)
+        saveOverrides(ov)
+        runTask {
+            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
+            merged.put(row.key, value)
+            writeFlagsFile(render(merged)) + "Saved ${row.key}. Restart Roblox to use it.\n"
+        }
+    }
+
+    private fun deleteFlag(row: FlagRow) {
+        val ov = loadOverrides()
+        ov.remove(row.key)
+        saveOverrides(ov)
+        val custom = HashSet(customKeys())
+        custom.remove(row.key)
+        prefs.edit().putStringSet("custom_keys", custom).apply()
+        runTask {
+            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
+            merged.remove(row.key)
+            writeFlagsFile(render(merged)) +
+                "Deleted ${row.key}. It comes back on Apply if a tweak or pack still sets it.\n"
         }
     }
 
@@ -844,9 +1341,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addCustomFlags(obj: JSONObject, restart: Boolean) {
-        val keys = mutableSetOf<String>()
-        val it = obj.keys()
-        while (it.hasNext()) keys.add(it.next())
+        val keys = jsonKeys(obj).toSet()
         val custom = HashSet(customKeys())
         custom.addAll(keys)
         prefs.edit().putStringSet("custom_keys", custom).apply()
@@ -926,6 +1421,8 @@ class MainActivity : AppCompatActivity() {
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
         spinnerAnim?.cancel()
+        animL?.cancel()
+        animR?.cancel()
         executor.shutdownNow()
         watchdog.shutdownNow()
     }
