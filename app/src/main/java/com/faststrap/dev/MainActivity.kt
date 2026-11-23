@@ -4,6 +4,8 @@ import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
@@ -13,6 +15,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -21,6 +24,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
@@ -40,17 +44,25 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.snackbar.Snackbar
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import rikka.shizuku.Shizuku
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import rikka.shizuku.Shizuku
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -61,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         val flags: Map<String, Any>
     )
 
-    /** A set of flags imported from the clipboard. Applied before tweaks and custom flags. */
+    /** A set of flags imported from the clipboard, a file or a link. Applied before tweaks. */
     private class Pack(
         val id: Long,
         val name: String,
@@ -76,8 +88,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** One row of the Applied tab: a flag currently in the flags file and where it came from. */
-    private class FlagRow(val key: String, val value: Any, val source: String)
+    /** One row of the flag explorer. */
+    private class FlagRow(
+        val key: String,
+        val value: Any,
+        val group: String,
+        val source: String,
+        val applied: Boolean,
+        val category: String
+    )
+
+    /** Everything Remove all clears, kept briefly so Undo can put it back. */
+    private class PrefState(
+        val tweaks: Map<String, Boolean>,
+        val packs: String?,
+        val custom: Set<String>,
+        val stale: Set<String>,
+        val overrides: String?
+    )
 
     private class FlagVH(v: View) : RecyclerView.ViewHolder(v) {
         val name: TextView = v.findViewById(R.id.flagName)
@@ -99,13 +127,14 @@ class MainActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: FlagVH, position: Int) {
             val r = items[position]
             holder.name.text = r.key
-            holder.source.text = r.source
+            holder.source.text = r.source + " \u00b7 " + r.category + if (r.applied) "" else " \u00b7 not applied"
             holder.value.text = formatValue(r.value)
             styleValueChip(holder.value, r.value)
-            holder.itemView.setOnClickListener { showFlagEditor(r) }
+            holder.itemView.setOnClickListener { showFlagSheet(r) }
             holder.itemView.animate().cancel()
             holder.itemView.alpha = 0f
-            holder.itemView.animate().alpha(1f).setStartDelay((position % 10) * 25L).setDuration(200).start()
+            holder.itemView.animate().alpha(if (r.applied) 1f else 0.6f)
+                .setStartDelay((position % 10) * 25L).setDuration(200).start()
         }
     }
 
@@ -117,10 +146,7 @@ class MainActivity : AppCompatActivity() {
     private val reqImport = 201
     private val reqExport = 202
     private val maxClipboardChars = 2_000_000
-    private val flagNameRegex = Regex("^[A-Za-z0-9_]+$")
-    private val pairRegex = Regex(
-        "\"([A-Za-z0-9_]+)\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|true|false|-?\\d+(?:\\.\\d+)?)"
-    )
+    private val removeLabel = "Removed all Stargazer flags"
 
     // Dark "AMOLED" look: black background, slate surfaces, one accent color.
     private val accents = listOf("#D0BCFF", "#A3C7FF", "#A8DAB5", "#FFB59A", "#FFB1C8", "#C4C7C5")
@@ -157,24 +183,45 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectCard: MaterialCardView
     private lateinit var hintText: TextView
     private lateinit var countText: TextView
-    private lateinit var outputText: TextView
+    private lateinit var profileRow: LinearLayout
+    private lateinit var segRow: LinearLayout
+    private lateinit var segExplorer: TextView
+    private lateinit var segAdd: TextView
+    private lateinit var explorerView: View
+    private lateinit var addView: View
+    private lateinit var filterRow: LinearLayout
+    private lateinit var flagSearch: EditText
+    private lateinit var appliedCount: TextView
+    private lateinit var flagRecycler: RecyclerView
     private lateinit var packEmpty: TextView
     private lateinit var packList: LinearLayout
-    private lateinit var appliedCount: TextView
-    private lateinit var flagSearch: EditText
-    private lateinit var flagRecycler: RecyclerView
+    private lateinit var customInput: EditText
+    private lateinit var urlInput: EditText
+    private lateinit var perfStatus: TextView
+    private lateinit var fpsText: TextView
+    private lateinit var frameTimeText: TextView
+    private lateinit var frameGraph: FrameGraphView
+    private lateinit var cpuText: TextView
+    private lateinit var gpuText: TextView
+    private lateinit var ramText: TextView
+    private lateinit var tempText: TextView
+    private lateinit var deviceInfoText: TextView
+    private lateinit var historyEmpty: TextView
+    private lateinit var historyList: LinearLayout
+    private lateinit var logText: TextView
     private lateinit var requestButton: MaterialButton
     private lateinit var applyButton: MaterialButton
     private lateinit var viewButton: MaterialButton
+    private lateinit var undoButton: MaterialButton
     private lateinit var removeButton: MaterialButton
+    private lateinit var clearLogButton: MaterialButton
     private lateinit var addCustomButton: MaterialButton
     private lateinit var importButton: MaterialButton
     private lateinit var exportButton: MaterialButton
     private lateinit var importPackButton: MaterialButton
+    private lateinit var importUrlButton: MaterialButton
     private lateinit var launchButton: MaterialCardView
     private lateinit var launchIcon: ImageView
-    private lateinit var customInput: EditText
-    private lateinit var segRow: LinearLayout
     private lateinit var cbFps: CompoundButton
     private lateinit var cbFpsCounter: CompoundButton
     private lateinit var cbSky: CompoundButton
@@ -187,7 +234,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var navItems: List<LinearLayout>
     private val segments = mutableListOf<MaterialCardView>()
     private val flagAdapter = FlagAdapter()
-    private var appliedAll: List<FlagRow> = emptyList()
+    private var allRows: List<FlagRow> = emptyList()
+
+    // Flag explorer state.
+    private var showingAdd = false
+    private var scopeAll = false
+    private var srcFilter = 0
+    private var catFilter = 0
+    private var sortMode = 0
 
     // Sliding nav indicator state.
     private var indLeft = 0f
@@ -196,11 +250,23 @@ class MainActivity : AppCompatActivity() {
     private var animL: ValueAnimator? = null
     private var animR: ValueAnimator? = null
 
-    // Commands run one at a time off the main thread; the watchdog kills hung processes.
+    private val history by lazy { FlagHistory(File(filesDir, "history")) }
+    private val activityLog = ActivityLog()
+
+    // Shell commands run one at a time; the watchdog kills hung processes. Downloads and the
+    // live performance sampler get their own threads so they never block a flag change.
     private val executor = Executors.newSingleThreadExecutor()
+    private val netExecutor = Executors.newSingleThreadExecutor()
+    private val perfExecutor = Executors.newSingleThreadExecutor()
     private val watchdog = Executors.newSingleThreadScheduledExecutor()
     private var busy = false
     private var spinnerAnim: ObjectAnimator? = null
+
+    @Volatile
+    private var perfRunning = false
+
+    @Volatile
+    private var perfToken = 0
 
     private val permissionListener =
         Shizuku.OnRequestPermissionResultListener { _, _ -> updateStatus() }
@@ -238,24 +304,45 @@ class MainActivity : AppCompatActivity() {
         connectCard = findViewById(R.id.connectCard)
         hintText = findViewById(R.id.hintText)
         countText = findViewById(R.id.countText)
-        outputText = findViewById(R.id.outputText)
+        profileRow = findViewById(R.id.profileRow)
+        segRow = findViewById(R.id.segRow)
+        segExplorer = findViewById(R.id.segExplorer)
+        segAdd = findViewById(R.id.segAdd)
+        explorerView = findViewById(R.id.explorerView)
+        addView = findViewById(R.id.addView)
+        filterRow = findViewById(R.id.filterRow)
+        flagSearch = findViewById(R.id.flagSearch)
+        appliedCount = findViewById(R.id.appliedCount)
+        flagRecycler = findViewById(R.id.flagRecycler)
         packEmpty = findViewById(R.id.packEmpty)
         packList = findViewById(R.id.packList)
-        appliedCount = findViewById(R.id.appliedCount)
-        flagSearch = findViewById(R.id.flagSearch)
-        flagRecycler = findViewById(R.id.flagRecycler)
+        customInput = findViewById(R.id.customInput)
+        urlInput = findViewById(R.id.urlInput)
+        perfStatus = findViewById(R.id.perfStatus)
+        fpsText = findViewById(R.id.fpsText)
+        frameTimeText = findViewById(R.id.frameTimeText)
+        frameGraph = findViewById(R.id.frameGraph)
+        cpuText = findViewById(R.id.cpuText)
+        gpuText = findViewById(R.id.gpuText)
+        ramText = findViewById(R.id.ramText)
+        tempText = findViewById(R.id.tempText)
+        deviceInfoText = findViewById(R.id.deviceInfoText)
+        historyEmpty = findViewById(R.id.historyEmpty)
+        historyList = findViewById(R.id.historyList)
+        logText = findViewById(R.id.logText)
         requestButton = findViewById(R.id.requestButton)
         applyButton = findViewById(R.id.applyButton)
         viewButton = findViewById(R.id.viewButton)
+        undoButton = findViewById(R.id.undoButton)
         removeButton = findViewById(R.id.removeButton)
+        clearLogButton = findViewById(R.id.clearLogButton)
         addCustomButton = findViewById(R.id.addCustomButton)
         importButton = findViewById(R.id.importButton)
         exportButton = findViewById(R.id.exportButton)
         importPackButton = findViewById(R.id.importPackButton)
+        importUrlButton = findViewById(R.id.importUrlButton)
         launchButton = findViewById(R.id.launchButton)
         launchIcon = findViewById(R.id.launchIcon)
-        customInput = findViewById(R.id.customInput)
-        segRow = findViewById(R.id.segRow)
         cbFps = findViewById(R.id.cbFps)
         cbFpsCounter = findViewById(R.id.cbFpsCounter)
         cbSky = findViewById(R.id.cbSky)
@@ -265,14 +352,14 @@ class MainActivity : AppCompatActivity() {
         tabViews = listOf(
             findViewById<View>(R.id.tabTweaks),
             findViewById<View>(R.id.tabFlags),
-            findViewById<View>(R.id.tabApplied),
-            findViewById<View>(R.id.tabLog)
+            findViewById<View>(R.id.tabPerf),
+            findViewById<View>(R.id.tabActivity)
         )
         navItems = listOf(
             findViewById<LinearLayout>(R.id.navTweaks),
             findViewById<LinearLayout>(R.id.navFlags),
-            findViewById<LinearLayout>(R.id.navApplied),
-            findViewById<LinearLayout>(R.id.navLog)
+            findViewById<LinearLayout>(R.id.navPerf),
+            findViewById<LinearLayout>(R.id.navActivity)
         )
 
         bottomScrim.background = GradientDrawable(
@@ -322,14 +409,19 @@ class MainActivity : AppCompatActivity() {
         buildSegments()
 
         tweaks.forEach { it.toggle.isChecked = prefs.getBoolean(it.prefKey, false) }
-        switches.forEach { it.setOnCheckedChangeListener { _, _ -> updateCount() } }
+        switches.forEach {
+            it.setOnCheckedChangeListener { _, _ ->
+                updateCount()
+                renderProfiles()
+            }
+        }
 
         flagRecycler.layoutManager = LinearLayoutManager(this)
         flagRecycler.adapter = flagAdapter
         flagSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                filterApplied()
+                applyFilters()
             }
 
             override fun afterTextChanged(s: Editable?) {}
@@ -340,21 +432,25 @@ class MainActivity : AppCompatActivity() {
         Shizuku.addBinderDeadListener(binderDead)
 
         requestButton.setOnClickListener { Shizuku.requestPermission(100) }
-        applyButton.setOnClickListener {
-            confirmRestart("Apply the selected tweaks and enabled packs. Roblox needs a restart for them to take effect.") {
-                applyFlags(it)
-            }
-        }
+        applyButton.setOnClickListener { startApply() }
         viewButton.setOnClickListener { viewFlags() }
+        undoButton.setOnClickListener { undoLast(null) }
         removeButton.setOnClickListener {
-            confirmRestart("Remove all Stargazer flags, including packs, edits and custom flags added here. Flags you added by hand outside the app are kept.") {
+            confirmRestart("Remove all Stargazer flags, including packs, edits and custom flags added here. Flags you added by hand outside the app are kept. You can undo this right after.") {
                 removeFlags(it)
             }
+        }
+        clearLogButton.setOnClickListener {
+            activityLog.clear()
+            renderLog()
         }
         addCustomButton.setOnClickListener { onAddCustomClicked() }
         importButton.setOnClickListener { startImport() }
         exportButton.setOnClickListener { startExport() }
         importPackButton.setOnClickListener { importPackFromClipboard() }
+        importUrlButton.setOnClickListener { importFromUrl() }
+        segExplorer.setOnClickListener { setFlagsMode(false) }
+        segAdd.setOnClickListener { setFlagsMode(true) }
         statusPill.setOnClickListener { updateStatus() }
         themeButton.setOnClickListener { showThemeDialog() }
         launchButton.setOnClickListener {
@@ -366,8 +462,9 @@ class MainActivity : AppCompatActivity() {
 
         // Every tappable thing squishes slightly when pressed.
         listOf<View>(
-            themeButton, statusPill, launchButton, applyButton, requestButton, viewButton,
-            removeButton, addCustomButton, importButton, exportButton, importPackButton
+            themeButton, statusPill, launchButton, applyButton, requestButton, viewButton, undoButton,
+            removeButton, clearLogButton, addCustomButton, importButton, exportButton,
+            importPackButton, importUrlButton, segExplorer, segAdd
         ).forEach { pressable(it) }
         navItems.forEach { pressable(it) }
 
@@ -387,10 +484,51 @@ class MainActivity : AppCompatActivity() {
         updateStatus()
     }
 
+    override fun onPause() {
+        super.onPause()
+        stopPerf()
+    }
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun dialog(): MaterialAlertDialogBuilder =
         MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Stargazer_Dialog)
+
+    private fun fmtDate(t: Long): String =
+        SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(t))
+
+    private fun copyText(text: String) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("Stargazer", text))
+    }
+
+    // ---- Log ----
+
+    private fun log(severity: Severity, text: String) {
+        activityLog.add(severity, text)
+        renderLog()
+    }
+
+    private fun renderLog() {
+        logText.text = activityLog.render()
+    }
+
+    private fun logIssues(issues: List<Issue>) {
+        issues.sortedBy { it.severity.ordinal }.take(40).forEach { activityLog.add(it.severity, it.line()) }
+        renderLog()
+    }
+
+    /** Newest entry first, so details are added before their summary line. */
+    private fun logResult(result: String) {
+        val lines = result.lines().map { it.trimEnd() }.filter { it.isNotBlank() }
+        if (lines.isEmpty()) return
+        val severity = if (lines[0].startsWith("Error")) Severity.ERROR else Severity.INFO
+        val details = lines.drop(1).take(12)
+        if (lines.size > 13) activityLog.add(Severity.INFO, "  \u2026 ${lines.size - 13} more lines")
+        details.reversed().forEach { activityLog.add(Severity.INFO, "  $it") }
+        activityLog.add(severity, lines[0])
+        renderLog()
+    }
 
     // ---- Animations ----
 
@@ -410,9 +548,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Opening sequence, modeled on the system splash: the plain badge shape is already on screen
-     * (slate background), then it turns while the logo pops in, holds, and shrinks away as the
-     * top bar, content and navigation bar slide into place.
+     * Opening sequence: the plain badge shape is already on screen (slate background), then it
+     * turns while the logo pops in, holds, and shrinks away as the top bar, content and
+     * navigation bar slide into place.
      */
     private fun playIntro() {
         topBar.alpha = 0f
@@ -434,7 +572,6 @@ class MainActivity : AppCompatActivity() {
         splashLogo.animate().alpha(1f).scaleX(1f).scaleY(1f).rotation(0f)
             .setStartDelay(120).setDuration(520)
             .setInterpolator(OvershootInterpolator(1.1f)).start()
-        // A small squash and stretch makes the badge feel alive while it holds.
         ObjectAnimator.ofPropertyValuesHolder(
             splashCookie,
             PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.08f, 1f),
@@ -532,7 +669,22 @@ class MainActivity : AppCompatActivity() {
             }, 300)
         }
         tab = index
-        if (index == 2) refreshApplied()
+        if (from == 2 && index != 2) stopPerf()
+        when (index) {
+            1 -> {
+                styleSeg()
+                renderChips()
+                if (!showingAdd) refreshExplorer()
+            }
+            2 -> {
+                updateDeviceInfo()
+                startPerf()
+            }
+            3 -> {
+                renderHistory()
+                renderLog()
+            }
+        }
         updateNav(animate && from != index)
     }
 
@@ -649,26 +801,50 @@ class MainActivity : AppCompatActivity() {
             intArrayOf(accent, Color.parseColor("#3A3F45"))
         )
 
+    private fun pillBg(color: Int, radiusDp: Int = 20): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor(color)
+        }
+
+    private fun makeChip(label: String, active: Boolean): TextView {
+        val t = TextView(this)
+        t.text = label
+        t.textSize = 14f
+        t.setPadding(dp(16), dp(10), dp(16), dp(10))
+        t.setTextColor(if (active) accent else textPrimary)
+        t.background = pillBg(if (active) container else surfaceHigh)
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        lp.marginEnd = dp(8)
+        t.layoutParams = lp
+        pressable(t)
+        return t
+    }
+
     private fun applyTheme() {
         val a = accent
         val tint = ColorStateList.valueOf(a)
         themeButton.setCardBackgroundColor(a)
-        listOf(applyButton, requestButton, addCustomButton, importPackButton).forEach {
+        listOf(applyButton, requestButton, addCustomButton, importPackButton, importUrlButton).forEach {
             it.backgroundTintList = tint
             it.setTextColor(onAccent)
         }
         removeButton.setStrokeColor(tint)
         removeButton.setTextColor(a)
+        clearLogButton.setTextColor(a)
         switches.forEach { (it as? MaterialSwitch)?.trackTintList = trackTint() }
         segments.forEach { it.setStrokeColor(a) }
         busySpinner.setColorFilter(a)
+        frameGraph.accent = a
         launchButton.setCardBackgroundColor(container)
         launchIcon.setColorFilter(a)
-        navIndicator.background = GradientDrawable().apply {
-            cornerRadius = dp(24).toFloat()
-            setColor(container)
-        }
+        navIndicator.background = pillBg(container, 24)
         updateNav(false)
+        styleSeg()
+        renderChips()
+        renderProfiles()
         renderPacks()
         updateCount()
         flagAdapter.notifyDataSetChanged()
@@ -712,18 +888,17 @@ class MainActivity : AppCompatActivity() {
         lastCount = n
     }
 
-    // ---- Status and shell ----
+    // ---- Status ----
 
     private fun hasShizuku(): Boolean =
         Shizuku.pingBinder() &&
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
 
-    private fun robloxInstalled(): Boolean =
+    private fun robloxVersion(): String? =
         try {
-            packageManager.getPackageInfo(robloxPkg, 0)
-            true
+            packageManager.getPackageInfo(robloxPkg, 0).versionName
         } catch (e: PackageManager.NameNotFoundException) {
-            false
+            null
         }
 
     private fun launchRoblox() {
@@ -743,7 +918,7 @@ class MainActivity : AppCompatActivity() {
         val ready = hasShizuku()
         statusText.text = when {
             !alive -> "Shizuku not running"
-            ready -> "Connected"
+            ready -> "Connected \u00b7 Shizuku \u00b7 ${shizukuMode()}"
             else -> "Permission needed"
         }
         val dotColor = when {
@@ -755,22 +930,44 @@ class MainActivity : AppCompatActivity() {
             shape = GradientDrawable.OVAL
             setColor(dotColor)
         }
+        val cur = robloxVersion()
+        val last = prefs.getString("applied_version", null)
         hintText.text = when {
             !alive -> "Open the Shizuku app and tap Start."
             !ready -> "Allow Stargazer to use Shizuku."
-            !robloxInstalled() -> "Roblox ($robloxPkg) isn't installed."
+            cur == null -> "Roblox ($robloxPkg) isn't installed."
+            last != null && last != cur ->
+                "Roblox updated ($last \u2192 $cur) since you last applied flags. Review the Flags tab, some may no longer work."
             else -> ""
         }
         connectCard.visibility = if (hintText.text.isEmpty()) View.GONE else View.VISIBLE
         requestButton.visibility = if (alive && !ready) View.VISIBLE else View.GONE
         val enabled = ready && !busy
-        listOf(applyButton, viewButton, removeButton, addCustomButton, importButton, exportButton)
-            .forEach {
-                it.isEnabled = enabled
-                it.alpha = if (enabled) 1f else 0.4f
-            }
-        if (tab == 2) refreshApplied()
+        listOf(
+            applyButton, viewButton, undoButton, removeButton, addCustomButton, importButton, exportButton
+        ).forEach {
+            it.isEnabled = enabled
+            it.alpha = if (enabled) 1f else 0.4f
+        }
+        if (tab == 1 && !showingAdd) refreshExplorer()
+        if (tab == 2) {
+            updateDeviceInfo()
+            startPerf()
+        }
     }
+
+    private fun shizukuMode(): String =
+        try {
+            when (val uid = Shizuku.getUid()) {
+                0 -> "root"
+                2000 -> "adb"
+                else -> "uid $uid"
+            }
+        } catch (e: Throwable) {
+            "unknown"
+        }
+
+    // ---- Shell ----
 
     /**
      * Runs a shell command through Shizuku. stderr is merged into stdout inside the shell so a
@@ -809,15 +1006,18 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Runs [task] off the main thread, disables the buttons and spins the status icon meanwhile,
-     * then shows its result in the Log tab (and its first line as a toast when [toastResult]).
+     * then writes its result to the log (and its first line as a toast when [toastResult]).
      */
-    private fun runTask(toastResult: Boolean = true, task: () -> String) {
+    private fun runTask(
+        toastResult: Boolean = true,
+        onDone: ((String) -> Unit)? = null,
+        task: () -> String
+    ) {
         if (busy) {
             toast("Still working, try again in a moment.")
             return
         }
         busy = true
-        outputText.text = "Running..."
         setBusyUi(true)
         updateStatus()
         executor.execute {
@@ -830,14 +1030,16 @@ class MainActivity : AppCompatActivity() {
                 if (isDestroyed) return@runOnUiThread
                 busy = false
                 setBusyUi(false)
-                outputText.text = result
+                logResult(result)
                 if (toastResult) {
                     val first = result.lineSequence().firstOrNull { it.isNotBlank() }
                     if (first != null && first.length < 120) {
                         Toast.makeText(this, first, Toast.LENGTH_SHORT).show()
                     }
                 }
+                onDone?.invoke(result)
                 updateStatus()
+                if (tab == 3) renderHistory()
             }
         }
     }
@@ -866,9 +1068,11 @@ class MainActivity : AppCompatActivity() {
             "fi\n" +
             "setprop $fpsProp false\n"
 
+    // ---- Flags file: merge, write, history ----
+
     private fun managedKeys(): Set<String> = tweaks.flatMap { it.flags.keys }.toSet()
 
-    /** Keys added through the Custom flags card (paste or import), remembered so Remove can clear them. */
+    /** Keys added through the custom flags card, kept so Remove can clear them. */
     private fun customKeys(): Set<String> =
         HashSet(prefs.getStringSet("custom_keys", emptySet()) ?: emptySet())
 
@@ -876,7 +1080,7 @@ class MainActivity : AppCompatActivity() {
     private fun staleKeys(): Set<String> =
         HashSet(prefs.getStringSet("stale_keys", emptySet()) ?: emptySet())
 
-    /** Values edited in the Applied tab. They are applied last, so they win over tweaks and packs. */
+    /** Values edited in the flag sheet. They are applied last, so they win over tweaks and packs. */
     private fun loadOverrides(): JSONObject =
         try {
             JSONObject(prefs.getString("overrides", "{}") ?: "{}")
@@ -946,6 +1150,65 @@ class MainActivity : AppCompatActivity() {
                 runShell("mv -f $flagsPath.new $flagsPath && chmod 0644 $flagsPath")
         }
 
+    /**
+     * Writes the flags file and records it in the history (plus the original file the first
+     * time). Also remembers which Roblox version the flags were applied on.
+     */
+    private fun commitFlags(existing: String, json: String?, label: String): String {
+        val before = readFlagsObject(existing)
+        val after = if (json == null) JSONObject() else readFlagsObject(json)
+        val ver = robloxVersion()
+        if (history.isEmpty() && before.length() > 0) history.add("Before Stargazer", before, ver)
+        val out = writeFlagsFile(json)
+        val newest = history.list().firstOrNull()
+        if (newest == null || !FlagDiff.diff(newest.flags, after).isEmpty) history.add(label, after, ver)
+        if (ver != null) prefs.edit().putString("applied_version", ver).apply()
+        return out
+    }
+
+    // ---- Apply (with validation), view, remove ----
+
+    /** What Apply would write, as (source, flags) pairs from lowest to highest priority. */
+    private fun intendedSources(): List<Pair<String, Map<String, Any>>> {
+        val sources = mutableListOf<Pair<String, Map<String, Any>>>()
+        loadPacks().filter { it.on }.forEach { sources.add(Pair(it.name, FlagValidator.toMap(it.flags))) }
+        tweaks.filter { it.toggle.isChecked }.forEach { sources.add(Pair("Tweak ${it.prefKey}", it.flags)) }
+        val ov = loadOverrides()
+        if (ov.length() > 0) sources.add(Pair("Edited", FlagValidator.toMap(ov)))
+        return sources
+    }
+
+    /**
+     * Checks the selection before it is written. Errors and conflicts stop to ask; ordinary
+     * warnings (such as an unrecognised prefix) go to the log so large packs don't nag.
+     */
+    private fun startApply() {
+        val sources = intendedSources()
+        val merged = LinkedHashMap<String, Any>()
+        sources.forEach { merged.putAll(it.second) }
+        val issues = FlagValidator.validateFlags(merged) + FlagValidator.findConflicts(sources)
+        logIssues(issues)
+        val blocking = issues.filter { it.severity == Severity.ERROR || it.conflict }
+        val message = "Apply the selected tweaks and enabled packs. Roblox needs a restart for them to take effect."
+        if (blocking.isEmpty()) {
+            val minor = issues.size
+            if (minor > 0) toast("$minor warnings, see the Activity log.")
+            confirmRestart(message) { applyFlags(it) }
+            return
+        }
+        val hasErrors = blocking.any { it.severity == Severity.ERROR }
+        val builder = dialog()
+            .setTitle(if (hasErrors) "Fix these first" else "Check before applying")
+            .setMessage(FlagValidator.summarize(blocking))
+        if (hasErrors) {
+            builder.setPositiveButton("OK", null)
+        } else {
+            builder.setPositiveButton("Apply anyway") { _, _ -> confirmRestart(message) { applyFlags(it) } }
+            builder.setNegativeButton("Cancel", null)
+        }
+        builder.show()
+    }
+
     private fun applyFlags(restart: Boolean) {
         val editor = prefs.edit()
         tweaks.forEach { editor.putBoolean(it.prefKey, it.toggle.isChecked) }
@@ -962,35 +1225,70 @@ class MainActivity : AppCompatActivity() {
         val activePacks = packs.count { it.on }
 
         runTask {
-            val json = mergeJson(
-                runShell("cat $flagsPath 2>/dev/null"), selected, packs, custom, stale, overrides, false
-            )
+            val existing = runShell("cat $flagsPath 2>/dev/null")
+            val json = mergeJson(existing, selected, packs, custom, stale, overrides, false)
             val sb = StringBuilder()
             sb.append(if (fpsOn) fpsOnScript() else fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Applied ${selected.size} tweak(s) and $activePacks pack(s). " +
                 if (restart) "Roblox was restarted.'\n" else "Restart Roblox to use them.'\n")
-            sb.append("echo; ls -la $flagsPath 2>&1\n")
-            sb.append("echo; echo fps_prop=\$(getprop $fpsProp)\n")
-            writeFlagsFile(json) + runShell(sb.toString())
+            val label = "Applied ${selected.size} tweak(s), $activePacks pack(s)"
+            commitFlags(existing, json, label) + runShell(sb.toString())
         }
     }
 
     private fun viewFlags() {
-        showTab(3)
-        runTask(toastResult = false) {
-            runShell(
-                "echo '== flags file =='; " +
-                    "if [ -f $flagsPath ]; then cat $flagsPath; else echo '(no flags file)'; fi; " +
-                    "echo; echo '== fps =='; echo fps_prop=\$(getprop $fpsProp); " +
-                    "echo peak=\$(settings get system peak_refresh_rate) " +
-                    "min=\$(settings get system min_refresh_rate)"
-            )
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        executor.execute {
+            val text = try {
+                runShell("cat $flagsPath 2>/dev/null")
+            } catch (e: Exception) {
+                "Error: $e"
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val shown = if (text.isBlank()) "(no flags file)" else text
+                dialog()
+                    .setTitle("Flags file")
+                    .setMessage(shown.take(60000))
+                    .setPositiveButton("Close", null)
+                    .setNeutralButton("Copy") { _, _ ->
+                        copyText(text)
+                        toast("Copied.")
+                    }
+                    .show()
+                log(Severity.INFO, "Viewed the flags file (${readFlagsObject(text).length()} flags).")
+            }
         }
     }
 
+    private fun captureState(): PrefState = PrefState(
+        tweaks.associate { Pair(it.prefKey, it.toggle.isChecked) },
+        prefs.getString("packs", null),
+        customKeys(),
+        staleKeys(),
+        prefs.getString("overrides", null)
+    )
+
+    private fun restoreState(s: PrefState) {
+        val e = prefs.edit()
+        s.tweaks.forEach { (k, v) -> e.putBoolean(k, v) }
+        e.putString("packs", s.packs)
+        e.putStringSet("custom_keys", s.custom)
+        e.putStringSet("stale_keys", s.stale)
+        e.putString("overrides", s.overrides)
+        e.apply()
+        tweaks.forEach { it.toggle.isChecked = s.tweaks[it.prefKey] ?: false }
+        renderPacks()
+        renderProfiles()
+    }
+
     private fun removeFlags(restart: Boolean) {
-        // Snapshot before prefs change.
+        // Snapshot before prefs change, so Undo can put everything back.
+        val backup = captureState()
         val custom = customKeys()
         val stale = staleKeys()
         val packs = loadPacks()
@@ -1005,20 +1303,288 @@ class MainActivity : AppCompatActivity() {
         savePacks(packs)
         renderPacks()
 
-        runTask {
-            val json = mergeJson(
-                runShell("cat $flagsPath 2>/dev/null"), emptyList(), packs, custom, stale, overrides, true
-            )
+        runTask(onDone = { showRemoveSnack(backup) }) {
+            val existing = runShell("cat $flagsPath 2>/dev/null")
+            val json = mergeJson(existing, emptyList(), packs, custom, stale, overrides, true)
             val sb = StringBuilder()
             sb.append(fpsOffScript())
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Stargazer flags removed. " +
                 if (restart) "Roblox was restarted.'" else "Restart Roblox to finish.'")
-            writeFlagsFile(json) + runShell(sb.toString())
+            commitFlags(existing, json, removeLabel) + runShell(sb.toString())
         }
     }
 
-    // ---- Applied flags: see every flag in the file, tap one to edit it ----
+    private fun showRemoveSnack(backup: PrefState) {
+        Snackbar.make(root, "Flags removed", Snackbar.LENGTH_LONG)
+            .setAnchorView(bottomBar)
+            .setAction("Undo") {
+                restoreState(backup)
+                undoLast(removeLabel)
+            }
+            .show()
+    }
+
+    // ---- History: restore, compare, undo ----
+
+    private fun renderHistory() {
+        executor.execute {
+            val list = history.list()
+            runOnUiThread {
+                if (!isDestroyed) renderHistoryList(list)
+            }
+        }
+    }
+
+    private fun renderHistoryList(list: List<HistoryEntry>) {
+        historyList.removeAllViews()
+        historyEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+        for (e in list.take(25)) {
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.VERTICAL
+            row.setPadding(dp(16), dp(12), dp(16), dp(12))
+            row.background = pillBg(surfaceHigh, 18)
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            lp.bottomMargin = dp(8)
+            row.layoutParams = lp
+            val title = TextView(this)
+            title.text = e.label
+            title.setTextColor(textPrimary)
+            title.textSize = 14f
+            val sub = TextView(this)
+            sub.text = fmtDate(e.time) + " \u00b7 ${e.flags.length()} flags" +
+                (if (e.roblox != null) " \u00b7 Roblox ${e.roblox}" else "")
+            sub.setTextColor(Color.parseColor("#9AA0A6"))
+            sub.textSize = 12f
+            row.addView(title)
+            row.addView(sub)
+            row.setOnClickListener { showHistoryMenu(e, list) }
+            pressable(row)
+            historyList.addView(row)
+        }
+    }
+
+    private fun showHistoryMenu(e: HistoryEntry, list: List<HistoryEntry>) {
+        val idx = list.indexOfFirst { it.id == e.id }
+        val previous = if (idx >= 0) list.getOrNull(idx + 1) else null
+        dialog()
+            .setTitle(e.label)
+            .setItems(
+                arrayOf(
+                    "Restore this configuration",
+                    "Compare with current",
+                    "Compare with the change before",
+                    "Compare with another\u2026",
+                    "Delete from history"
+                )
+            ) { _, which ->
+                when (which) {
+                    0 -> restoreEntry(e)
+                    1 -> withCurrentFlags { cur ->
+                        showDiff("Since \u201c${e.label}\u201d", FlagDiff.diff(e.flags, cur))
+                    }
+                    2 -> if (previous == null) {
+                        toast("There is no earlier entry.")
+                    } else {
+                        showDiff("What \u201c${e.label}\u201d changed", FlagDiff.diff(previous.flags, e.flags))
+                    }
+                    3 -> pickOtherEntry(e, list)
+                    4 -> {
+                        executor.execute {
+                            history.delete(e.id)
+                            runOnUiThread { if (!isDestroyed) renderHistory() }
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun pickOtherEntry(e: HistoryEntry, list: List<HistoryEntry>) {
+        val others = list.filter { it.id != e.id }
+        if (others.isEmpty()) {
+            toast("There is nothing else to compare with.")
+            return
+        }
+        val names = others.take(25).map { it.label + " (" + fmtDate(it.time) + ")" }.toTypedArray()
+        dialog().setTitle("Compare with").setItems(names) { _, which ->
+            val other = others[which]
+            val older = if (other.time < e.time) other else e
+            val newer = if (other.time < e.time) e else other
+            showDiff("${older.label} \u2192 ${newer.label}", FlagDiff.diff(older.flags, newer.flags))
+        }.show()
+    }
+
+    private fun showDiff(title: String, d: DiffResult) {
+        dialog()
+            .setTitle(title)
+            .setMessage(FlagDiff.format(d))
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun withCurrentFlags(block: (JSONObject) -> Unit) {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        executor.execute {
+            val text = try {
+                runShell("cat $flagsPath 2>/dev/null")
+            } catch (e: Exception) {
+                ""
+            }
+            val cur = readFlagsObject(text)
+            runOnUiThread {
+                if (!isDestroyed) block(cur)
+            }
+        }
+    }
+
+    private fun restoreEntry(e: HistoryEntry) {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        confirmRestart(
+            "Put the flags file back to \u201c${e.label}\u201d (${fmtDate(e.time)}). Your tweak toggles and packs in the app stay as they are, so tapping Apply later applies those again."
+        ) { restart ->
+            runTask {
+                val existing = runShell("cat $flagsPath 2>/dev/null")
+                val sb = StringBuilder()
+                sb.append(commitFlags(existing, render(e.flags), "Restored: ${e.label}"))
+                if (restart) sb.append(runShell("am force-stop $robloxPkg"))
+                sb.append("Restored \u201c${e.label}\u201d.\n")
+                sb.toString()
+            }
+        }
+    }
+
+    /** Goes back one step: the newest history entry is dropped and the one before it is written. */
+    private fun undoLast(requireLabel: String?) {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        executor.execute {
+            val list = history.list()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (list.size < 2 || (requireLabel != null && list[0].label != requireLabel)) {
+                    toast("Nothing to undo.")
+                    return@runOnUiThread
+                }
+                val newest = list[0]
+                val target = list[1]
+                if (requireLabel != null) {
+                    doUndo(newest, target)
+                } else {
+                    dialog()
+                        .setTitle("Undo last change?")
+                        .setMessage(
+                            "Undo \u201c${newest.label}\u201d and go back to \u201c${target.label}\u201d (${fmtDate(target.time)})."
+                        )
+                        .setPositiveButton("Undo") { _, _ -> doUndo(newest, target) }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun doUndo(newest: HistoryEntry, target: HistoryEntry) {
+        runTask {
+            val out = writeFlagsFile(render(target.flags))
+            history.delete(newest.id)
+            out + "Undone: ${newest.label}. Restart Roblox to use it.\n"
+        }
+    }
+
+    // ---- Profiles ----
+
+    private fun renderProfiles() {
+        profileRow.removeAllViews()
+        val selected = tweaks.filter { it.toggle.isChecked }.map { it.prefKey }.toSet()
+        val packsOn = loadPacks().filter { it.on }.map { it.id }.toSet()
+        for (p in Profiles.builtIn) {
+            val chip = makeChip(p.name, selected == p.tweaks)
+            chip.setOnClickListener { applyProfile(p) }
+            profileRow.addView(chip)
+        }
+        for (p in Profiles.loadCustom(prefs)) {
+            val chip = makeChip(p.name, selected == p.tweaks && packsOn == (p.packs ?: emptySet<Long>()))
+            chip.setOnClickListener { applyProfile(p) }
+            chip.setOnLongClickListener {
+                confirmDeleteProfile(p)
+                true
+            }
+            profileRow.addView(chip)
+        }
+        val save = makeChip("+ Save current", false)
+        save.setOnClickListener { promptSaveProfile() }
+        profileRow.addView(save)
+    }
+
+    private fun applyProfile(p: Profile) {
+        tweaks.forEach { it.toggle.isChecked = it.prefKey in p.tweaks }
+        val ids = p.packs
+        if (ids != null) {
+            val packs = loadPacks()
+            packs.forEach { it.on = it.id in ids }
+            savePacks(packs)
+            renderPacks()
+        }
+        renderProfiles()
+        toast("\u201c${p.name}\u201d selected. Tap Apply to use it.")
+    }
+
+    private fun promptSaveProfile() {
+        val input = EditText(this)
+        input.hint = "Profile name"
+        input.setTextColor(textPrimary)
+        input.inputType = InputType.TYPE_CLASS_TEXT
+        val wrap = FrameLayout(this)
+        wrap.setPadding(dp(24), dp(8), dp(24), 0)
+        wrap.addView(input)
+        dialog()
+            .setTitle("Save current selection")
+            .setMessage("Saves the tweaks that are switched on and which packs are enabled.")
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ -> saveProfile(input.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun saveProfile(rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            toast("Give the profile a name.")
+            return
+        }
+        val list = Profiles.loadCustom(prefs).filter { !it.name.equals(name, ignoreCase = true) }.toMutableList()
+        val tw = tweaks.filter { it.toggle.isChecked }.map { it.prefKey }.toSet()
+        val pk = loadPacks().filter { it.on }.map { it.id }.toSet()
+        list.add(Profile(name, tw, pk, false))
+        Profiles.saveCustom(prefs, list)
+        renderProfiles()
+        toast("Saved \u201c$name\u201d.")
+    }
+
+    private fun confirmDeleteProfile(p: Profile) {
+        dialog()
+            .setTitle("Delete \u201c${p.name}\u201d?")
+            .setPositiveButton("Delete") { _, _ ->
+                val list = Profiles.loadCustom(prefs).filter { it.name != p.name }
+                Profiles.saveCustom(prefs, list)
+                renderProfiles()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---- Flag explorer ----
 
     private fun formatValue(v: Any): String = if (v is String) "\"$v\"" else v.toString()
 
@@ -1037,35 +1603,112 @@ class MainActivity : AppCompatActivity() {
 
     private fun styleValueChip(tv: TextView, value: Any) {
         val on = value == true
-        tv.background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
-            setColor(if (on) container else surfaceHigh)
-        }
+        tv.background = pillBg(if (on) container else surfaceHigh, 14)
         tv.setTextColor(if (on) accent else textPrimary)
     }
 
-    private fun sourceOf(
-        key: String,
-        overrides: Set<String>,
-        custom: Set<String>,
-        packs: List<Pack>
-    ): String = when {
-        key in overrides -> "Edited"
-        key in managedKeys() -> "Tweak"
-        key in custom -> "Custom"
-        else -> packs.firstOrNull { key in it.keys() }?.name ?: "Other (not set by Stargazer)"
+    private fun styleSeg() {
+        listOf(Pair(segExplorer, !showingAdd), Pair(segAdd, showingAdd)).forEach { (v, selected) ->
+            v.setTextColor(if (selected) accent else textMuted)
+            v.background = if (selected) pillBg(container, 20) else null
+        }
     }
 
-    /** Reads the flags file and refreshes the Applied tab. */
-    private fun refreshApplied() {
+    private fun setFlagsMode(add: Boolean) {
+        if (showingAdd == add) return
+        showingAdd = add
+        styleSeg()
+        explorerView.visibility = if (add) View.GONE else View.VISIBLE
+        addView.visibility = if (add) View.VISIBLE else View.GONE
+        staggerIn(if (add) addView else explorerView)
+        if (!add) refreshExplorer()
+    }
+
+    private fun renderChips() {
+        filterRow.removeAllViews()
+
+        fun add(label: String, active: Boolean, onClick: () -> Unit) {
+            val c = makeChip(label, active)
+            c.setOnClickListener { onClick() }
+            filterRow.addView(c)
+        }
+
+        add(if (scopeAll) "All known flags" else "Applied only", scopeAll) {
+            scopeAll = !scopeAll
+            renderChips()
+            refreshExplorer()
+        }
+        add(if (srcFilter == 0) "Source" else FlagInfo.sources[srcFilter], srcFilter != 0) {
+            pickFilter("Source", FlagInfo.sources, srcFilter) { srcFilter = it }
+        }
+        add(if (catFilter == 0) "Category" else FlagInfo.categories[catFilter], catFilter != 0) {
+            pickFilter("Category", FlagInfo.categories, catFilter) { catFilter = it }
+        }
+        add("Sort: ${FlagInfo.sorts[sortMode]}", false) {
+            pickFilter("Sort by", FlagInfo.sorts, sortMode) { sortMode = it }
+        }
+    }
+
+    private fun pickFilter(title: String, options: List<String>, current: Int, set: (Int) -> Unit) {
+        dialog()
+            .setTitle(title)
+            .setSingleChoiceItems(options.toTypedArray(), current) { d, which ->
+                set(which)
+                d.dismiss()
+                renderChips()
+                applyFilters()
+            }
+            .show()
+    }
+
+    private fun makeRow(
+        k: String,
+        v: Any,
+        applied: Boolean,
+        overrides: Set<String>,
+        custom: Set<String>,
+        tweakKeys: Set<String>,
+        packSets: List<Pair<Pack, Set<String>>>
+    ): FlagRow {
+        var group = "Other"
+        var source = "Other (not set by Stargazer)"
+        when {
+            k in overrides -> {
+                group = "Edited"
+                source = "Edited"
+            }
+            k in tweakKeys -> {
+                group = "Tweak"
+                source = "Tweak"
+            }
+            k in custom -> {
+                group = "Custom"
+                source = "Custom"
+            }
+            else -> {
+                val p = packSets.firstOrNull { k in it.second }
+                if (p != null) {
+                    group = "Pack"
+                    source = p.first.name
+                }
+            }
+        }
+        return FlagRow(k, v, group, source, applied, FlagInfo.categoryOf(k))
+    }
+
+    /** Reads the flags file (and, in "All known" mode, what tweaks and packs could add). */
+    private fun refreshExplorer() {
         if (!hasShizuku()) {
-            appliedAll = emptyList()
-            filterApplied()
+            allRows = emptyList()
+            applyFilters()
             return
         }
         val overrides = jsonKeys(loadOverrides()).toSet()
         val custom = customKeys()
         val packs = loadPacks()
+        val packSets = packs.map { Pair(it, it.keys().toHashSet() as Set<String>) }
+        val tweakKeys = managedKeys()
+        val includeKnown = scopeAll
         executor.execute {
             val text = try {
                 runShell("cat $flagsPath 2>/dev/null")
@@ -1073,97 +1716,242 @@ class MainActivity : AppCompatActivity() {
                 ""
             }
             val obj = readFlagsObject(text)
-            val rows = jsonKeys(obj)
-                .map { k -> FlagRow(k, obj.get(k), sourceOf(k, overrides, custom, packs)) }
-                .sortedBy { it.key.lowercase() }
+            val rows = ArrayList<FlagRow>()
+            val seen = HashSet<String>()
+            for (k in jsonKeys(obj)) {
+                seen.add(k)
+                rows.add(makeRow(k, obj.get(k), true, overrides, custom, tweakKeys, packSets))
+            }
+            if (includeKnown) {
+                for (t in tweaks) {
+                    for ((k, v) in t.flags) {
+                        if (seen.add(k)) rows.add(makeRow(k, v, false, overrides, custom, tweakKeys, packSets))
+                    }
+                }
+                for (p in packs) {
+                    for (k in p.keys()) {
+                        if (seen.add(k)) rows.add(makeRow(k, p.flags.get(k), false, overrides, custom, tweakKeys, packSets))
+                    }
+                }
+            }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
-                appliedAll = rows
-                filterApplied()
+                allRows = rows
+                applyFilters()
             }
         }
     }
 
-    private fun filterApplied() {
+    private fun applyFilters() {
+        var list = allRows
         val q = flagSearch.text.toString().trim().lowercase()
-        val list = if (q.isEmpty()) {
-            appliedAll
-        } else {
-            appliedAll.filter {
+        if (q.isNotEmpty()) {
+            list = list.filter {
                 it.key.lowercase().contains(q) || formatValue(it.value).lowercase().contains(q)
             }
+        }
+        if (srcFilter > 0) list = list.filter { it.group == FlagInfo.sources[srcFilter] }
+        if (catFilter > 0) list = list.filter { it.category == FlagInfo.categories[catFilter] }
+        list = when (sortMode) {
+            0 -> list.sortedBy { it.key.lowercase() }
+            1 -> list.sortedByDescending { it.key.lowercase() }
+            2 -> list.sortedWith(compareBy<FlagRow>({ it.group }, { it.key.lowercase() }))
+            else -> list.sortedWith(compareBy<FlagRow>({ formatValue(it.value) }, { it.key.lowercase() }))
         }
         flagAdapter.items = list
         flagAdapter.notifyDataSetChanged()
         appliedCount.text = when {
-            !hasShizuku() -> "Connect Shizuku to see applied flags."
-            appliedAll.isEmpty() -> "No flags applied yet."
-            q.isEmpty() -> "${appliedAll.size} flags \u00b7 tap one to edit"
-            else -> "${list.size} of ${appliedAll.size} flags"
+            !hasShizuku() -> "Connect Shizuku to see your flags."
+            allRows.isEmpty() -> "No flags applied yet."
+            list.size == allRows.size -> "${allRows.size} flags \u00b7 tap one for details"
+            else -> "${list.size} of ${allRows.size} flags"
         }
     }
 
-    private fun showFlagEditor(row: FlagRow) {
-        if (!hasShizuku()) {
-            toast("Connect Shizuku first.")
-            return
+    private fun buildFlagInfo(row: FlagRow): String {
+        val lines = mutableListOf<String>()
+        lines.add("Default value: not known")
+        lines.add("Description: Stargazer has no reference data for this flag.")
+        val issues = FlagValidator.validateFlags(mapOf(row.key to row.value))
+        if (issues.isEmpty()) {
+            lines.add("Checks: the name, type and prefix look valid.")
+        } else {
+            issues.forEach { lines.add(it.line()) }
         }
-        val input = EditText(this)
+        val cur = robloxVersion()
+        val last = prefs.getString("applied_version", null)
+        if (cur != null && last != null && cur != last) {
+            lines.add("! Last applied on Roblox $last, but $cur is installed. Check that it still works.")
+        } else if (cur != null) {
+            lines.add("Roblox installed: $cur")
+        }
+        if (!row.applied) lines.add("This flag is known to Stargazer but isn't in the flags file right now.")
+        return lines.joinToString("\n")
+    }
+
+    /** A bottom sheet with the full flag name, its value, details and actions. */
+    private fun showFlagSheet(row: FlagRow) {
+        val dlg = BottomSheetDialog(this)
+        val v = LayoutInflater.from(this).inflate(R.layout.sheet_flag, null)
+        val input = v.findViewById<EditText>(R.id.sheetValue)
+        val save = v.findViewById<MaterialButton>(R.id.sheetSave)
+        val copy = v.findViewById<MaterialButton>(R.id.sheetCopy)
+        val delete = v.findViewById<MaterialButton>(R.id.sheetDelete)
+        v.findViewById<TextView>(R.id.sheetName).text = row.key
+        v.findViewById<TextView>(R.id.sheetSub).text =
+            FlagValidator.typeLabel(row.value) + " \u00b7 " + row.category + " (guessed from the name) \u00b7 " + row.source
+        v.findViewById<TextView>(R.id.sheetInfo).text = buildFlagInfo(row)
         input.setText(valueToText(row.value))
-        input.setSelectAllOnFocus(true)
-        input.typeface = Typeface.MONOSPACE
-        input.setTextColor(textPrimary)
-        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        val wrap = FrameLayout(this)
-        wrap.setPadding(dp(24), dp(8), dp(24), 0)
-        wrap.addView(input)
-        val note = when (row.source) {
-            "Edited" -> "You edited this. Your value is kept when you tap Apply."
-            "Tweak" -> "Set by a tweak. Your edit is kept when you tap Apply."
-            else -> "Source: ${row.source}. Use true, false, a number, or text."
+        save.text = if (row.applied) "Save value" else "Add to flags file"
+        save.backgroundTintList = ColorStateList.valueOf(accent)
+        save.setTextColor(onAccent)
+        delete.visibility = if (row.applied) View.VISIBLE else View.GONE
+        copy.setOnClickListener {
+            copyText(row.key)
+            toast("Name copied.")
         }
-        dialog()
-            .setTitle(row.key)
-            .setMessage(note)
-            .setView(wrap)
-            .setPositiveButton("Save") { _, _ -> saveFlagValue(row, input.text.toString()) }
-            .setNeutralButton("Delete") { _, _ -> deleteFlag(row) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        save.setOnClickListener {
+            if (!hasShizuku()) {
+                toast("Connect Shizuku first.")
+            } else {
+                saveFlagValue(row.key, input.text.toString())
+                dlg.dismiss()
+            }
+        }
+        delete.setOnClickListener {
+            if (!hasShizuku()) {
+                toast("Connect Shizuku first.")
+            } else {
+                deleteFlag(row.key)
+                dlg.dismiss()
+            }
+        }
+        dlg.setContentView(v)
+        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        dlg.setOnShowListener { dlg.behavior.state = BottomSheetBehavior.STATE_EXPANDED }
+        dlg.show()
     }
 
-    private fun saveFlagValue(row: FlagRow, text: String) {
+    private fun saveFlagValue(key: String, text: String) {
         if (text.isBlank()) {
             toast("Enter a value.")
             return
         }
         val value = parseValue(text)
         val ov = loadOverrides()
-        ov.put(row.key, value)
+        ov.put(key, value)
         saveOverrides(ov)
         runTask {
-            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
-            merged.put(row.key, value)
-            writeFlagsFile(render(merged)) + "Saved ${row.key}. Restart Roblox to use it.\n"
+            val existing = runShell("cat $flagsPath 2>/dev/null")
+            val merged = readFlagsObject(existing)
+            merged.put(key, value)
+            commitFlags(existing, render(merged), "Edited $key") + "Saved $key. Restart Roblox to use it.\n"
         }
     }
 
-    private fun deleteFlag(row: FlagRow) {
+    private fun deleteFlag(key: String) {
         val ov = loadOverrides()
-        ov.remove(row.key)
+        ov.remove(key)
         saveOverrides(ov)
         val custom = HashSet(customKeys())
-        custom.remove(row.key)
+        custom.remove(key)
         prefs.edit().putStringSet("custom_keys", custom).apply()
         runTask {
-            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
-            merged.remove(row.key)
-            writeFlagsFile(render(merged)) +
-                "Deleted ${row.key}. It comes back on Apply if a tweak or pack still sets it.\n"
+            val existing = runShell("cat $flagsPath 2>/dev/null")
+            val merged = readFlagsObject(existing)
+            merged.remove(key)
+            commitFlags(existing, render(merged), "Deleted $key") +
+                "Deleted $key. It comes back on Apply if a tweak or pack still sets it.\n"
         }
     }
 
-    // ---- Flag packs (clipboard) ----
+    // ---- Performance and device ----
+
+    private fun startPerf() {
+        if (perfRunning) return
+        if (!hasShizuku()) {
+            perfStatus.text = "Connect Shizuku to see live stats."
+            return
+        }
+        perfRunning = true
+        val token = ++perfToken
+        perfExecutor.execute {
+            while (perfRunning && token == perfToken && !isDestroyed) {
+                val out = try {
+                    runShell(PerfSampler.script(robloxPkg))
+                } catch (e: Exception) {
+                    ""
+                }
+                val sample = PerfSampler.parse(out, robloxPkg)
+                runOnUiThread {
+                    if (perfRunning && token == perfToken && !isDestroyed) showSample(sample)
+                }
+                try {
+                    Thread.sleep(1500)
+                } catch (e: InterruptedException) {
+                    break
+                }
+            }
+        }
+    }
+
+    private fun stopPerf() {
+        perfRunning = false
+        perfToken++
+    }
+
+    private fun showSample(s: PerfSample) {
+        perfStatus.text =
+            if (s.running) "Live \u00b7 updates every couple of seconds" else "Roblox isn't running. Launch it, then check back."
+        fpsText.text = s.fps?.let { it.roundToInt().toString() } ?: "\u2014"
+        val ft = s.frameTimesMs
+        frameTimeText.text = if (ft.isEmpty()) {
+            "No frame data"
+        } else {
+            "avg ${"%.1f".format(ft.average())} ms \u00b7 worst ${"%.0f".format(ft.maxOrNull() ?: 0f)} ms"
+        }
+        frameGraph.setData(ft)
+        cpuText.text = s.cpuApp?.let { "%.0f%%".format(it) } ?: "\u2014"
+        gpuText.text = s.gpu?.let { "%.0f%%".format(it) } ?: "N/A"
+        ramText.text = s.ramMb?.let { if (it >= 1024.0) "%.2f GB".format(it / 1024.0) else "%.0f MB".format(it) }
+            ?: "\u2014"
+        tempText.text = s.tempC?.let { "%.1f \u00b0C".format(it) } ?: "N/A"
+    }
+
+    private fun updateDeviceInfo() {
+        val ver = robloxVersion()
+        val last = prefs.getString("applied_version", null)
+        val mi = ActivityManager.MemoryInfo()
+        (getSystemService(ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+        val gb = mi.totalMem / 1073741824.0
+        val alive = Shizuku.pingBinder()
+        val ready = hasShizuku()
+        val sb = StringBuilder()
+        sb.append("Device: ${Build.MANUFACTURER} ${Build.MODEL}\n")
+        sb.append("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
+        sb.append("Memory: %.1f GB\n".format(gb))
+        sb.append("Roblox: ${ver ?: "not installed"}\n")
+        sb.append("Shizuku: ${if (alive) "running, ${shizukuMode()}" else "not running"}\n\n")
+        sb.append(if (alive) "\u2713 Shizuku is running\n" else "\u2717 Shizuku isn't running\n")
+        sb.append(if (ready) "\u2713 Permission granted\n" else "\u2717 Permission not granted\n")
+        sb.append(if (ver != null) "\u2713 Roblox is installed\n" else "\u2717 Roblox isn't installed\n")
+        sb.append(
+            if (last != null && ver != null && last != ver) {
+                "! Roblox changed since your last Apply ($last \u2192 $ver)\n"
+            } else {
+                "\u2713 Roblox hasn't changed since your last Apply\n"
+            }
+        )
+        val suggestion = when {
+            gb <= 4.0 -> "Competitive / FPS"
+            gb <= 8.0 -> "Balanced"
+            else -> "High graphics"
+        }
+        sb.append("\nA starting point for this device: $suggestion. It's a guess from the memory size, not a promise of better performance.")
+        deviceInfoText.text = sb.toString()
+    }
+
+    // ---- Flag packs ----
 
     private fun loadPacks(): MutableList<Pack> {
         val out = mutableListOf<Pack>()
@@ -1189,41 +1977,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Reads flags out of pasted text. Tries real JSON first; if that fails (for example the file
-     * was cut off while copying) it falls back to picking out every complete "Name": value pair.
-     * Entries with odd names or nested values are skipped.
+     * Shows what the validator found in incoming flags. Clean imports (or ones with only minor
+     * warnings, which go to the log) continue straight away; errors, cut-off text and duplicates
+     * ask first.
      */
-    private fun parseLenient(raw: String): JSONObject? {
-        val out = JSONObject()
-        val text = raw.trim()
-        var parsed: JSONObject? = null
-        try {
-            if (text.startsWith("{")) parsed = JSONObject(text)
-        } catch (e: JSONException) {
-            parsed = null
+    private fun reviewIncoming(title: String, parsed: ParsedFlags, actionLabel: String, onAccept: () -> Unit) {
+        logIssues(parsed.issues)
+        if (parsed.flags.length() == 0) {
+            dialog()
+                .setTitle("Nothing to import")
+                .setMessage(FlagValidator.summarize(parsed.issues))
+                .setPositiveButton("OK", null)
+                .show()
+            return
         }
-        if (parsed != null) {
-            val it = parsed.keys()
-            while (it.hasNext()) {
-                val k = it.next()
-                val v = parsed.get(k)
-                if (flagNameRegex.matches(k) && (v is Boolean || v is Number || v is String)) out.put(k, v)
-            }
-        } else {
-            pairRegex.findAll(text).forEach { m ->
-                val k = m.groupValues[1]
-                val v = m.groupValues[2]
-                val value: Any = when {
-                    v.startsWith("\"") -> v.substring(1, v.length - 1)
-                    v == "true" -> true
-                    v == "false" -> false
-                    v.contains('.') -> v.toDouble()
-                    else -> v.toLongOrNull() ?: v.toDouble()
-                }
-                out.put(k, value)
-            }
+        val significant = parsed.issues.any {
+            it.severity == Severity.ERROR || it.message.startsWith("JSON syntax") || it.message.contains("appears")
         }
-        return if (out.length() == 0) null else out
+        if (!significant) {
+            val minor = parsed.issues.size
+            if (minor > 0) toast("$minor warnings, see the Activity log.")
+            onAccept()
+            return
+        }
+        dialog()
+            .setTitle(title)
+            .setMessage("${parsed.flags.length()} usable flags found.\n\n" + FlagValidator.summarize(parsed.issues))
+            .setPositiveButton(actionLabel) { _, _ -> onAccept() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun addPack(flags: JSONObject, suffix: String?) {
+        val packs = loadPacks()
+        val id = (packs.maxOfOrNull { it.id } ?: 0L) + 1L
+        val name = if (suffix == null) "Pack $id" else "Pack $id ($suffix)"
+        packs.add(Pack(id, name, true, flags))
+        savePacks(packs)
+        renderPacks()
+        renderProfiles()
+        toast("Imported ${flags.length()} flags as $name. Tap Apply to use it.")
+        log(Severity.INFO, "Imported ${flags.length()} flags as $name.")
     }
 
     private fun importPackFromClipboard() {
@@ -1238,17 +2032,37 @@ class MainActivity : AppCompatActivity() {
             toast("That's too large to import.")
             return
         }
-        val flags = parseLenient(text)
-        if (flags == null) {
-            toast("No flags found in the clipboard.")
+        reviewIncoming("Review clipboard", FlagValidator.parse(text), "Import") {
+            addPack(FlagValidator.parse(text).flags, null)
+        }
+    }
+
+    private fun importFromUrl() {
+        val url = UrlImport.normalize(urlInput.text.toString())
+        if (url == null) {
+            toast("Enter a link that starts with https://")
             return
         }
-        val packs = loadPacks()
-        val id = (packs.maxOfOrNull { it.id } ?: 0L) + 1L
-        packs.add(Pack(id, "Pack $id", true, flags))
-        savePacks(packs)
-        renderPacks()
-        toast("Imported ${flags.length()} flags as Pack $id. Tap Apply to use it.")
+        toast("Downloading from ${UrlImport.host(url)}\u2026")
+        log(Severity.INFO, "Downloading $url")
+        netExecutor.execute {
+            val result = UrlImport.download(url)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val text = result.text
+                if (text == null) {
+                    log(Severity.ERROR, "Download failed: ${result.error}")
+                    toast("Download failed: ${result.error}")
+                    return@runOnUiThread
+                }
+                val host = UrlImport.host(url)
+                val parsed = FlagValidator.parse(text)
+                reviewIncoming("Review download from $host", parsed, "Import") {
+                    addPack(parsed.flags, host)
+                    urlInput.text.clear()
+                }
+            }
+        }
     }
 
     private fun renderPacks() {
@@ -1279,6 +2093,7 @@ class MainActivity : AppCompatActivity() {
         val packs = loadPacks()
         packs.firstOrNull { it.id == id }?.on = on
         savePacks(packs)
+        renderProfiles()
     }
 
     private fun confirmDeletePack(pack: Pack) {
@@ -1292,6 +2107,7 @@ class MainActivity : AppCompatActivity() {
                 stale.addAll(pack.keys())
                 prefs.edit().putStringSet("stale_keys", stale).apply()
                 renderPacks()
+                renderProfiles()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1299,44 +2115,14 @@ class MainActivity : AppCompatActivity() {
 
     // ---- Custom flags: paste, import, export ----
 
-    /**
-     * Parses pasted or imported FFlag JSON. Accepts a full object or bare `"Name": value,` lines.
-     * Flag names must be letters, digits or underscores; values must be true/false, a number or a string.
-     */
-    private fun parseFlags(raw: String): JSONObject? {
-        var text = raw.trim().trimEnd(',')
-        if (text.isEmpty()) {
-            toast("Nothing to add.")
-            return null
-        }
-        if (!text.startsWith("{")) text = "{$text}"
-        val obj = try {
-            JSONObject(text)
-        } catch (e: JSONException) {
-            toast("That isn't valid JSON.")
-            return null
-        }
-        if (obj.length() == 0) {
-            toast("No flags found.")
-            return null
-        }
-        val keys = obj.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val v = obj.get(k)
-            if (!flagNameRegex.matches(k) || !(v is Boolean || v is Number || v is String)) {
-                toast("Unsupported flag: $k")
-                return null
-            }
-        }
-        return obj
-    }
-
     private fun onAddCustomClicked() {
-        val obj = parseFlags(customInput.text.toString()) ?: return
-        confirmRestart("Add ${obj.length()} custom flag(s) to the flags file.") {
-            customInput.text.clear()
-            addCustomFlags(obj, it)
+        val text = customInput.text.toString()
+        reviewIncoming("Review flags", FlagValidator.parse(text), "Add") {
+            val flags = FlagValidator.parse(text).flags
+            confirmRestart("Add ${flags.length()} custom flag(s) to the flags file.") {
+                customInput.text.clear()
+                addCustomFlags(flags, it)
+            }
         }
     }
 
@@ -1347,13 +2133,14 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putStringSet("custom_keys", custom).apply()
 
         runTask {
-            val merged = readFlagsObject(runShell("cat $flagsPath 2>/dev/null"))
+            val existing = runShell("cat $flagsPath 2>/dev/null")
+            val merged = readFlagsObject(existing)
             keys.forEach { k -> merged.put(k, obj.get(k)) }
             val sb = StringBuilder()
             if (restart) sb.append("am force-stop $robloxPkg\n")
             sb.append("echo 'Added ${keys.size} custom flag(s). " +
                 if (restart) "Roblox was restarted.'\n" else "Restart Roblox to use them.'\n")
-            writeFlagsFile(render(merged)) + runShell(sb.toString())
+            commitFlags(existing, render(merged), "Added ${keys.size} custom flag(s)") + runShell(sb.toString())
         }
     }
 
@@ -1392,17 +2179,19 @@ class MainActivity : AppCompatActivity() {
         val text = try {
             contentResolver.openInputStream(uri)?.use { s ->
                 val bytes = s.readBytes()
-                if (bytes.size > 64 * 1024) null else String(bytes)
+                if (bytes.size > 1_000_000) null else String(bytes)
             }
         } catch (e: Exception) {
             null
         }
         if (text == null) {
-            toast("Couldn't read that file (max 64 KB).")
+            toast("Couldn't read that file (max 1 MB).")
             return
         }
-        val obj = parseFlags(text) ?: return
-        confirmRestart("Add ${obj.length()} flag(s) from the file.") { addCustomFlags(obj, it) }
+        reviewIncoming("Review file", FlagValidator.parse(text), "Add") {
+            val flags = FlagValidator.parse(text).flags
+            confirmRestart("Add ${flags.length()} flag(s) from the file.") { addCustomFlags(flags, it) }
+        }
     }
 
     private fun exportTo(uri: Uri) {
@@ -1417,6 +2206,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopPerf()
         Shizuku.removeRequestPermissionResultListener(permissionListener)
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
@@ -1424,6 +2214,8 @@ class MainActivity : AppCompatActivity() {
         animL?.cancel()
         animR?.cancel()
         executor.shutdownNow()
+        netExecutor.shutdownNow()
+        perfExecutor.shutdownNow()
         watchdog.shutdownNow()
     }
 }
