@@ -20,9 +20,12 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
@@ -62,6 +65,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -250,6 +254,34 @@ class MainActivity : AppCompatActivity() {
     private var animL: ValueAnimator? = null
     private var animR: ValueAnimator? = null
 
+    // Dragging the nav pill by hand.
+    private var navDownX = 0f
+    private var navDragging = false
+    private var navTracker: VelocityTracker? = null
+    private var navDragWidth = 0f
+    private var navTargetCenter = 0f
+    private var navDragIdx = 0
+    private val navSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+
+    /**
+     * Runs once per frame while the pill is being dragged. The two edges chase the finger at
+     * different speeds (the leading edge faster), so the pill stretches and snaps back like a
+     * drop of liquid.
+     */
+    private val navLiquid: Runnable = object : Runnable {
+        override fun run() {
+            if (!navDragging) return
+            val centerNow = (indLeft + indRight) / 2f
+            val movingRight = navTargetCenter > centerNow
+            val tl = navTargetCenter - navDragWidth / 2f
+            val tr = navTargetCenter + navDragWidth / 2f
+            val nl = indLeft + (tl - indLeft) * (if (movingRight) 0.2f else 0.5f)
+            val nr = indRight + (tr - indRight) * (if (movingRight) 0.5f else 0.2f)
+            setIndicator(nl, nr)
+            navIndicator.postOnAnimation(this)
+        }
+    }
+
     private val history by lazy { FlagHistory(File(filesDir, "history")) }
     private val activityLog = ActivityLog()
 
@@ -362,6 +394,14 @@ class MainActivity : AppCompatActivity() {
             findViewById<LinearLayout>(R.id.navActivity)
         )
 
+        // Keep the four tabs, even the widest label, inside the pill on narrow phones.
+        navRow.setPadding(dp(4), 0, dp(4), 0)
+        navItems.forEach { item ->
+            item.setPadding(dp(10), 0, dp(10), 0)
+            (item.getChildAt(1) as TextView).setSingleLine(true)
+        }
+        (navItems[3].getChildAt(1) as TextView).text = "Log"
+
         bottomScrim.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.TRANSPARENT, Color.BLACK)
@@ -458,15 +498,19 @@ class MainActivity : AppCompatActivity() {
                 .setInterpolator(DecelerateInterpolator()).start()
             launchButton.postDelayed({ launchRoblox() }, 220)
         }
-        navItems.forEachIndexed { i, item -> item.setOnClickListener { showTab(i) } }
+        // Tabs: tap one, or press and slide along the pill. The touch listener forwards plain
+        // taps to the click listener.
+        navItems.forEachIndexed { i, item ->
+            item.setOnClickListener { showTab(i) }
+            item.setOnTouchListener { v, e -> onNavTouch(v, e) }
+        }
 
-        // Every tappable thing squishes slightly when pressed.
+        // Every other tappable thing squishes slightly when pressed.
         listOf<View>(
             themeButton, statusPill, launchButton, applyButton, requestButton, viewButton, undoButton,
             removeButton, clearLogButton, addCustomButton, importButton, exportButton,
             importPackButton, importUrlButton, segExplorer, segAdd
         ).forEach { pressable(it) }
-        navItems.forEach { pressable(it) }
 
         applyTheme()
         showTab(0, false)
@@ -776,6 +820,104 @@ class MainActivity : AppCompatActivity() {
             interpolator = DecelerateInterpolator(1.6f)
             addUpdateListener { setIndicator(indLeft, it.animatedValue as Float) }
             start()
+        }
+    }
+
+    // ---- Dragging the pill ----
+
+    /** Finger position in the nav row's own coordinates. */
+    private fun navX(rawX: Float): Float {
+        val loc = IntArray(2)
+        navRow.getLocationOnScreen(loc)
+        return rawX - loc[0]
+    }
+
+    private fun nearestNavIndex(cx: Float): Int {
+        var best = 0
+        var bestD = Float.MAX_VALUE
+        navItems.forEachIndexed { i, item ->
+            val c = navRow.left + (item.left + item.right) / 2f
+            val d = abs(c - cx)
+            if (d < bestD) {
+                bestD = d
+                best = i
+            }
+        }
+        return best
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun onNavTouch(v: View, e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                navDownX = e.rawX
+                navDragging = false
+                navTracker?.recycle()
+                navTracker = VelocityTracker.obtain().also { it.addMovement(e) }
+                v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                navTracker?.addMovement(e)
+                if (!navDragging && abs(e.rawX - navDownX) > navSlop) {
+                    navDragging = true
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    beginNavDrag()
+                }
+                if (navDragging) dragNavTo(navX(e.rawX))
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(240)
+                    .setInterpolator(OvershootInterpolator(2.5f)).start()
+                if (navDragging) {
+                    navTracker?.computeCurrentVelocity(1000)
+                    endNavDrag(navTracker?.xVelocity ?: 0f)
+                } else if (e.actionMasked == MotionEvent.ACTION_UP) {
+                    v.performClick()
+                }
+                navTracker?.recycle()
+                navTracker = null
+            }
+        }
+        return true
+    }
+
+    private fun beginNavDrag() {
+        animL?.cancel()
+        animR?.cancel()
+        navDragWidth = (indRight - indLeft).coerceAtLeast(dp(44).toFloat())
+        navTargetCenter = (indLeft + indRight) / 2f
+        navDragIdx = nearestNavIndex(navTargetCenter)
+        // The pill squashes a little while it is held.
+        navIndicator.animate().cancel()
+        navIndicator.animate().scaleY(0.9f).setDuration(120).start()
+        navIndicator.postOnAnimation(navLiquid)
+    }
+
+    private fun dragNavTo(x: Float) {
+        val minC = navDragWidth / 2f + dp(4)
+        val maxC = maxOf(minC, navRow.width - navDragWidth / 2f - dp(4))
+        navTargetCenter = x.coerceIn(minC, maxC)
+        val idx = nearestNavIndex(navTargetCenter)
+        if (idx != navDragIdx) {
+            navDragIdx = idx
+            navRow.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+    }
+
+    private fun endNavDrag(vx: Float) {
+        navDragging = false
+        navIndicator.animate().cancel()
+        navIndicator.animate().scaleY(1f).setDuration(280)
+            .setInterpolator(OvershootInterpolator(2f)).start()
+        // Let a flick carry the pill a little further before it settles.
+        val projected = (indLeft + indRight) / 2f + vx * 0.08f
+        val target = nearestNavIndex(projected)
+        if (target == tab) {
+            val (l, r) = navBounds(tab)
+            animateIndicatorTo(l, r, true)
+        } else {
+            showTab(target)
         }
     }
 
@@ -1876,18 +2018,22 @@ class MainActivity : AppCompatActivity() {
         perfRunning = true
         val token = ++perfToken
         perfExecutor.execute {
+            // CPU use is the change between two readings, so one tracker lives for the whole loop.
+            val tracker = PerfTracker()
             while (perfRunning && token == perfToken && !isDestroyed) {
+                val started = System.currentTimeMillis()
                 val out = try {
                     runShell(PerfSampler.script(robloxPkg))
                 } catch (e: Exception) {
                     ""
                 }
-                val sample = PerfSampler.parse(out, robloxPkg)
+                val sample = tracker.update(PerfSampler.parse(out, robloxPkg))
                 runOnUiThread {
                     if (perfRunning && token == perfToken && !isDestroyed) showSample(sample)
                 }
+                val wait = 1000L - (System.currentTimeMillis() - started)
                 try {
-                    Thread.sleep(1500)
+                    if (wait > 0) Thread.sleep(wait)
                 } catch (e: InterruptedException) {
                     break
                 }
@@ -1901,8 +2047,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSample(s: PerfSample) {
-        perfStatus.text =
-            if (s.running) "Live \u00b7 updates every couple of seconds" else "Roblox isn't running. Launch it, then check back."
+        perfStatus.text = when {
+            !s.running -> "Roblox isn't running. Launch it, then check back."
+            s.fps == null && s.layerCount == 0 ->
+                "Live \u00b7 no Roblox graphics layer found, so FPS isn't available on this device"
+            s.fps == null -> "Live \u00b7 found ${s.layerCount} layer(s) but the system gave no frame data"
+            s.staticScreen -> "Live \u00b7 no new frames since the last reading (static screen or paused)"
+            else -> "Live \u00b7 updates every second"
+        }
         fpsText.text = s.fps?.let { it.roundToInt().toString() } ?: "\u2014"
         val ft = s.frameTimesMs
         frameTimeText.text = if (ft.isEmpty()) {
