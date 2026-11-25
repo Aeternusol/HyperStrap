@@ -240,9 +240,16 @@ class MainActivity : AppCompatActivity() {
     private val flagAdapter = FlagAdapter()
     private var allRows: List<FlagRow> = emptyList()
 
-    // Flag explorer state.
+    // Cards built in code (flag reference, compare tool, suggested profile).
+    private lateinit var refCountText: TextView
+    private lateinit var suggestButton: MaterialButton
+    private var suggestedProfile: Profile? = null
+    private val accentButtons = mutableListOf<MaterialButton>()
+    private val docs by lazy { FlagDocs(File(filesDir, "flagdocs.json")) }
+
+    // Flag explorer state. scopeMode: 0 = applied only, 1 = all known, 2 = reference docs.
     private var showingAdd = false
-    private var scopeAll = false
+    private var scopeMode = 0
     private var srcFilter = 0
     private var catFilter = 0
     private var sortMode = 0
@@ -447,6 +454,9 @@ class MainActivity : AppCompatActivity() {
         switches = tweaks.map { it.toggle }
 
         buildSegments()
+        buildExtraCards()
+        // Load the flag reference in the background so the first flag sheet opens instantly.
+        executor.execute { docs.size() }
 
         tweaks.forEach { it.toggle.isChecked = prefs.getBoolean(it.prefKey, false) }
         switches.forEach {
@@ -491,7 +501,7 @@ class MainActivity : AppCompatActivity() {
         importUrlButton.setOnClickListener { importFromUrl() }
         segExplorer.setOnClickListener { setFlagsMode(false) }
         segAdd.setOnClickListener { setFlagsMode(true) }
-        statusPill.setOnClickListener { updateStatus() }
+        statusPill.setOnClickListener { showConnectionDetails() }
         themeButton.setOnClickListener { showThemeDialog() }
         launchButton.setOnClickListener {
             launchIcon.animate().rotationBy(360f).setDuration(380)
@@ -544,6 +554,12 @@ class MainActivity : AppCompatActivity() {
     private fun copyText(text: String) {
         val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("Stargazer", text))
+    }
+
+    private fun clipboardText(): String {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip
+        return if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this).toString() else ""
     }
 
     // ---- Log ----
@@ -719,6 +735,7 @@ class MainActivity : AppCompatActivity() {
                 styleSeg()
                 renderChips()
                 if (!showingAdd) refreshExplorer()
+                updateReferenceCount()
             }
             2 -> {
                 updateDeviceInfo()
@@ -973,6 +990,7 @@ class MainActivity : AppCompatActivity() {
             it.backgroundTintList = tint
             it.setTextColor(onAccent)
         }
+        accentButtons.forEach { it.backgroundTintList = tint }
         removeButton.setStrokeColor(tint)
         removeButton.setTextColor(a)
         clearLogButton.setTextColor(a)
@@ -1028,6 +1046,284 @@ class MainActivity : AppCompatActivity() {
             }
         }
         lastCount = n
+    }
+
+    // ---- Views built in code: flag reference, compare tool, suggested profile ----
+
+    private fun lp(top: Int = 0, height: Int = ViewGroup.LayoutParams.WRAP_CONTENT): LinearLayout.LayoutParams {
+        val p = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height)
+        p.topMargin = dp(top)
+        return p
+    }
+
+    private fun makeButton(label: String, filled: Boolean, onClick: () -> Unit): MaterialButton {
+        val b = MaterialButton(this)
+        b.text = label
+        b.setAllCaps(false)
+        b.cornerRadius = dp(24)
+        b.layoutParams = lp(8, dp(48))
+        if (filled) {
+            accentButtons.add(b)
+            b.backgroundTintList = ColorStateList.valueOf(accent)
+            b.setTextColor(onAccent)
+        } else {
+            b.backgroundTintList = ColorStateList.valueOf(surfaceHigh)
+            b.setTextColor(textPrimary)
+        }
+        pressable(b)
+        b.setOnClickListener { onClick() }
+        return b
+    }
+
+    private fun buildCard(title: String, subtitle: String, children: List<View>): View {
+        val card = MaterialCardView(this)
+        card.layoutParams = lp(12)
+        card.radius = dp(28).toFloat()
+        card.cardElevation = 0f
+        card.setCardBackgroundColor(surface)
+        card.strokeWidth = 0
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(20), dp(20), dp(20))
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(textPrimary)
+        t.textSize = 16f
+        t.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        val s = TextView(this)
+        s.text = subtitle
+        s.setTextColor(Color.parseColor("#9AA0A6"))
+        s.textSize = 13f
+        s.layoutParams = lp(4)
+        col.addView(t)
+        col.addView(s)
+        children.forEach { col.addView(it) }
+        card.addView(col)
+        return card
+    }
+
+    private fun buildExtraCards() {
+        val addColumn = (addView as ScrollView).getChildAt(0) as LinearLayout
+
+        refCountText = TextView(this)
+        refCountText.setTextColor(textMuted)
+        refCountText.textSize = 13f
+        refCountText.layoutParams = lp(12)
+        refCountText.text = "No reference yet."
+        addColumn.addView(
+            buildCard(
+                "Flag reference",
+                "A searchable list of flag descriptions and defaults. Stargazer ships with none, so import one you trust (JSON). Then switch the Explorer's scope chip to Reference docs to search it.",
+                listOf(
+                    refCountText,
+                    makeButton("Import from clipboard", true) { importReferenceFromClipboard() },
+                    makeButton("Import from a link", false) { promptReferenceUrl() },
+                    makeButton("Clear reference (keeps your notes)", false) { confirmClearReference() }
+                )
+            )
+        )
+
+        addColumn.addView(
+            buildCard(
+                "Compare configurations",
+                "Copy a flag file's JSON, then see exactly what is added, removed or changed.",
+                listOf(
+                    makeButton("Clipboard vs current flags", false) { compareClipboardWithCurrent() },
+                    makeButton("Clipboard vs a history entry", false) { compareClipboardWithHistory() }
+                )
+            )
+        )
+
+        suggestButton = makeButton("Use suggested profile", true) { useSuggestedProfile() }
+        (deviceInfoText.parent as LinearLayout).addView(suggestButton)
+    }
+
+    // ---- Reference database and compare tool ----
+
+    private fun updateReferenceCount() {
+        executor.execute {
+            val n = docs.size()
+            runOnUiThread {
+                if (!isDestroyed) {
+                    refCountText.text = if (n == 0) "No reference yet." else "$n flags in the reference."
+                }
+            }
+        }
+    }
+
+    private fun importReferenceText(text: String) {
+        executor.execute {
+            val r = docs.importText(text)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val err = r.error
+                if (err != null) {
+                    toast(err)
+                    log(Severity.ERROR, "Reference import failed: $err")
+                } else {
+                    val msg = "Reference updated: ${r.added} added, ${r.updated} updated, ${r.skipped} skipped."
+                    toast(msg)
+                    log(Severity.INFO, msg)
+                }
+                updateReferenceCount()
+                if (tab == 1 && !showingAdd) refreshExplorer()
+            }
+        }
+    }
+
+    private fun importReferenceFromClipboard() {
+        val text = clipboardText()
+        if (text.isBlank()) {
+            toast("The clipboard is empty. Copy a JSON reference first.")
+            return
+        }
+        importReferenceText(text)
+    }
+
+    private fun promptReferenceUrl() {
+        val input = EditText(this)
+        input.hint = "https://"
+        input.setTextColor(textPrimary)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        val wrap = FrameLayout(this)
+        wrap.setPadding(dp(24), dp(8), dp(24), 0)
+        wrap.addView(input)
+        dialog()
+            .setTitle("Import a flag reference")
+            .setMessage("A JSON file of flag names with descriptions or defaults. https links only, up to 1 MB.")
+            .setView(wrap)
+            .setPositiveButton("Download") { _, _ -> downloadReference(input.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun downloadReference(raw: String) {
+        val url = UrlImport.normalize(raw)
+        if (url == null) {
+            toast("Enter a link that starts with https://")
+            return
+        }
+        toast("Downloading from ${UrlImport.host(url)}\u2026")
+        netExecutor.execute {
+            val result = UrlImport.download(url)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val text = result.text
+                if (text == null) {
+                    log(Severity.ERROR, "Download failed: ${result.error}")
+                    toast("Download failed: ${result.error}")
+                } else {
+                    importReferenceText(text)
+                }
+            }
+        }
+    }
+
+    private fun confirmClearReference() {
+        dialog()
+            .setTitle("Clear the flag reference?")
+            .setMessage("Descriptions and defaults you imported are removed. Your own notes stay.")
+            .setPositiveButton("Clear") { _, _ ->
+                executor.execute {
+                    docs.clearReference()
+                    runOnUiThread {
+                        if (!isDestroyed) {
+                            updateReferenceCount()
+                            if (tab == 1 && !showingAdd) refreshExplorer()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun compareClipboardWithCurrent() {
+        val text = clipboardText()
+        if (text.isBlank()) {
+            toast("The clipboard is empty. Copy a JSON flag file first.")
+            return
+        }
+        val parsed = FlagValidator.parse(text)
+        if (parsed.flags.length() == 0) {
+            toast("No usable flags found in the clipboard.")
+            return
+        }
+        withCurrentFlags { cur ->
+            showDiff("If the clipboard were applied", FlagDiff.diff(cur, parsed.flags))
+        }
+    }
+
+    private fun compareClipboardWithHistory() {
+        val text = clipboardText()
+        if (text.isBlank()) {
+            toast("The clipboard is empty. Copy a JSON flag file first.")
+            return
+        }
+        val parsed = FlagValidator.parse(text)
+        if (parsed.flags.length() == 0) {
+            toast("No usable flags found in the clipboard.")
+            return
+        }
+        executor.execute {
+            val list = history.list()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (list.isEmpty()) {
+                    toast("There is no history to compare with yet.")
+                    return@runOnUiThread
+                }
+                val names = list.take(25).map { it.label + " (" + fmtDate(it.time) + ")" }.toTypedArray()
+                dialog().setTitle("Compare the clipboard with").setItems(names) { _, which ->
+                    val e = list[which]
+                    showDiff("\u201c${e.label}\u201d vs the clipboard", FlagDiff.diff(e.flags, parsed.flags))
+                }.show()
+            }
+        }
+    }
+
+    /** Shows what Stargazer is connected to: Shizuku, Roblox and the flags file. */
+    private fun showConnectionDetails() {
+        updateStatus()
+        val alive = Shizuku.pingBinder()
+        val ready = hasShizuku()
+        val version = try {
+            Shizuku.getVersion().toString()
+        } catch (e: Throwable) {
+            "?"
+        }
+        val base = StringBuilder()
+        base.append(if (alive) "Shizuku: running, version $version, ${shizukuMode()}\n" else "Shizuku: not running\n")
+        base.append("Permission: ${if (ready) "granted" else "not granted"}\n")
+        base.append("Roblox: $robloxPkg ${robloxVersion() ?: "(not installed)"}\n")
+        base.append("Flags file: $flagsPath")
+        val dlg = dialog()
+            .setTitle("Connection")
+            .setMessage(base.toString())
+            .setPositiveButton("Close", null)
+            .show()
+        if (!ready) return
+        executor.execute {
+            val text = try {
+                runShell("cat $flagsPath 2>/dev/null")
+            } catch (e: Exception) {
+                ""
+            }
+            val count = readFlagsObject(text).length()
+            val newest = history.list().firstOrNull()
+            val extra = StringBuilder(base)
+            extra.append(if (text.isBlank()) " (not created yet)" else " ($count flags)")
+            if (newest != null) extra.append("\nLast change: ${newest.label}, ${fmtDate(newest.time)}")
+            runOnUiThread {
+                if (!isDestroyed && dlg.isShowing) dlg.setMessage(extra.toString())
+            }
+        }
+    }
+
+    private fun useSuggestedProfile() {
+        val p = suggestedProfile ?: return
+        applyProfile(p)
+        showTab(0)
     }
 
     // ---- Status ----
@@ -1486,11 +1782,11 @@ class MainActivity : AppCompatActivity() {
             row.orientation = LinearLayout.VERTICAL
             row.setPadding(dp(16), dp(12), dp(16), dp(12))
             row.background = pillBg(surfaceHigh, 18)
-            val lp = LinearLayout.LayoutParams(
+            val rowLp = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
-            lp.bottomMargin = dp(8)
-            row.layoutParams = lp
+            rowLp.bottomMargin = dp(8)
+            row.layoutParams = rowLp
             val title = TextView(this)
             title.text = e.label
             title.setTextColor(textPrimary)
@@ -1775,8 +2071,13 @@ class MainActivity : AppCompatActivity() {
             filterRow.addView(c)
         }
 
-        add(if (scopeAll) "All known flags" else "Applied only", scopeAll) {
-            scopeAll = !scopeAll
+        val scopeLabel = when (scopeMode) {
+            1 -> "All known flags"
+            2 -> "Reference docs"
+            else -> "Applied only"
+        }
+        add(scopeLabel, scopeMode != 0) {
+            scopeMode = (scopeMode + 1) % 3
             renderChips()
             refreshExplorer()
         }
@@ -1838,7 +2139,11 @@ class MainActivity : AppCompatActivity() {
         return FlagRow(k, v, group, source, applied, FlagInfo.categoryOf(k))
     }
 
-    /** Reads the flags file (and, in "All known" mode, what tweaks and packs could add). */
+    /**
+     * Reads the flags file. "All known" also lists what tweaks and packs could add; "Reference
+     * docs" lists every flag in the imported reference (and the user's notes), marking which
+     * ones are in the file right now.
+     */
     private fun refreshExplorer() {
         if (!hasShizuku()) {
             allRows = emptyList()
@@ -1850,7 +2155,7 @@ class MainActivity : AppCompatActivity() {
         val packs = loadPacks()
         val packSets = packs.map { Pair(it, it.keys().toHashSet() as Set<String>) }
         val tweakKeys = managedKeys()
-        val includeKnown = scopeAll
+        val mode = scopeMode
         executor.execute {
             val text = try {
                 runShell("cat $flagsPath 2>/dev/null")
@@ -1859,20 +2164,33 @@ class MainActivity : AppCompatActivity() {
             }
             val obj = readFlagsObject(text)
             val rows = ArrayList<FlagRow>()
-            val seen = HashSet<String>()
-            for (k in jsonKeys(obj)) {
-                seen.add(k)
-                rows.add(makeRow(k, obj.get(k), true, overrides, custom, tweakKeys, packSets))
-            }
-            if (includeKnown) {
-                for (t in tweaks) {
-                    for ((k, v) in t.flags) {
-                        if (seen.add(k)) rows.add(makeRow(k, v, false, overrides, custom, tweakKeys, packSets))
+            if (mode == 2) {
+                for (k in docs.names().take(20000)) {
+                    if (obj.has(k)) {
+                        rows.add(makeRow(k, obj.get(k), true, overrides, custom, tweakKeys, packSets))
+                    } else {
+                        val d = docs.get(k)
+                        rows.add(
+                            FlagRow(k, d?.defaultValue ?: "\u2014", "Other", "Reference", false, FlagInfo.categoryOf(k))
+                        )
                     }
                 }
-                for (p in packs) {
-                    for (k in p.keys()) {
-                        if (seen.add(k)) rows.add(makeRow(k, p.flags.get(k), false, overrides, custom, tweakKeys, packSets))
+            } else {
+                val seen = HashSet<String>()
+                for (k in jsonKeys(obj)) {
+                    seen.add(k)
+                    rows.add(makeRow(k, obj.get(k), true, overrides, custom, tweakKeys, packSets))
+                }
+                if (mode == 1) {
+                    for (t in tweaks) {
+                        for ((k, v) in t.flags) {
+                            if (seen.add(k)) rows.add(makeRow(k, v, false, overrides, custom, tweakKeys, packSets))
+                        }
+                    }
+                    for (p in packs) {
+                        for (k in p.keys()) {
+                            if (seen.add(k)) rows.add(makeRow(k, p.flags.get(k), false, overrides, custom, tweakKeys, packSets))
+                        }
                     }
                 }
             }
@@ -1889,7 +2207,8 @@ class MainActivity : AppCompatActivity() {
         val q = flagSearch.text.toString().trim().lowercase()
         if (q.isNotEmpty()) {
             list = list.filter {
-                it.key.lowercase().contains(q) || formatValue(it.value).lowercase().contains(q)
+                it.key.lowercase().contains(q) || formatValue(it.value).lowercase().contains(q) ||
+                    (scopeMode == 2 && (docs.get(it.key)?.description?.lowercase()?.contains(q) == true))
             }
         }
         if (srcFilter > 0) list = list.filter { it.group == FlagInfo.sources[srcFilter] }
@@ -1904,6 +2223,7 @@ class MainActivity : AppCompatActivity() {
         flagAdapter.notifyDataSetChanged()
         appliedCount.text = when {
             !hasShizuku() -> "Connect Shizuku to see your flags."
+            allRows.isEmpty() && scopeMode == 2 -> "No reference yet. Import one under Add or import."
             allRows.isEmpty() -> "No flags applied yet."
             list.size == allRows.size -> "${allRows.size} flags \u00b7 tap one for details"
             else -> "${list.size} of ${allRows.size} flags"
@@ -1912,8 +2232,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildFlagInfo(row: FlagRow): String {
         val lines = mutableListOf<String>()
-        lines.add("Default value: not known")
-        lines.add("Description: Stargazer has no reference data for this flag.")
+        val d = docs.get(row.key)
+        lines.add("Default value: " + (d?.defaultValue ?: "not known"))
+        lines.add(
+            "Description: " + (d?.description
+                ?: "none yet. Import a flag reference (Flags > Add or import) or add your own note below.")
+        )
+        d?.type?.let { lines.add("Documented type: $it") }
+        docs.note(row.key)?.let { lines.add("Your note: $it") }
         val issues = FlagValidator.validateFlags(mapOf(row.key to row.value))
         if (issues.isEmpty()) {
             lines.add("Checks: the name, type and prefix look valid.")
@@ -1927,8 +2253,37 @@ class MainActivity : AppCompatActivity() {
         } else if (cur != null) {
             lines.add("Roblox installed: $cur")
         }
-        if (!row.applied) lines.add("This flag is known to Stargazer but isn't in the flags file right now.")
+        if (!row.applied) lines.add("This flag isn't in the flags file right now.")
         return lines.joinToString("\n")
+    }
+
+    private fun promptNote(key: String, done: () -> Unit) {
+        val input = EditText(this)
+        input.setText(docs.note(key) ?: "")
+        input.hint = "What this flag does, or why you changed it"
+        input.setTextColor(textPrimary)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        val wrap = FrameLayout(this)
+        wrap.setPadding(dp(24), dp(8), dp(24), 0)
+        wrap.addView(input)
+        dialog()
+            .setTitle("Note for this flag")
+            .setMessage(key)
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ ->
+                val note = input.text.toString()
+                executor.execute {
+                    docs.setNote(key, note)
+                    runOnUiThread {
+                        if (!isDestroyed) {
+                            toast("Note saved.")
+                            done()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** A bottom sheet with the full flag name, its value, details and actions. */
@@ -1936,14 +2291,15 @@ class MainActivity : AppCompatActivity() {
         val dlg = BottomSheetDialog(this)
         val v = LayoutInflater.from(this).inflate(R.layout.sheet_flag, null)
         val input = v.findViewById<EditText>(R.id.sheetValue)
+        val info = v.findViewById<TextView>(R.id.sheetInfo)
         val save = v.findViewById<MaterialButton>(R.id.sheetSave)
         val copy = v.findViewById<MaterialButton>(R.id.sheetCopy)
         val delete = v.findViewById<MaterialButton>(R.id.sheetDelete)
         v.findViewById<TextView>(R.id.sheetName).text = row.key
         v.findViewById<TextView>(R.id.sheetSub).text =
             FlagValidator.typeLabel(row.value) + " \u00b7 " + row.category + " (guessed from the name) \u00b7 " + row.source
-        v.findViewById<TextView>(R.id.sheetInfo).text = buildFlagInfo(row)
-        input.setText(valueToText(row.value))
+        info.text = buildFlagInfo(row)
+        input.setText(if (!row.applied && row.value == "\u2014") "" else valueToText(row.value))
         save.text = if (row.applied) "Save value" else "Add to flags file"
         save.backgroundTintList = ColorStateList.valueOf(accent)
         save.setTextColor(onAccent)
@@ -1966,6 +2322,23 @@ class MainActivity : AppCompatActivity() {
             } else {
                 deleteFlag(row.key)
                 dlg.dismiss()
+            }
+        }
+        // A note button goes right under the details.
+        val column = (v as ViewGroup).getChildAt(0) as ViewGroup
+        val noteLabel = if (docs.note(row.key) != null) "Edit your note" else "Add a note"
+        column.addView(
+            makeButton(noteLabel, false) { promptNote(row.key) { dlg.dismiss() } },
+            column.indexOfChild(info) + 1
+        )
+        // What the flag was set to before Stargazer first changed anything, when that is known.
+        executor.execute {
+            val before = history.list().lastOrNull { it.label == "Before Stargazer" }
+            if (before != null) {
+                val shown = if (before.flags.has(row.key)) formatValue(before.flags.get(row.key)) else "not set"
+                runOnUiThread {
+                    if (!isDestroyed && dlg.isShowing) info.text = info.text.toString() + "\nBefore Stargazer: $shown"
+                }
             }
         }
         dlg.setContentView(v)
@@ -2094,13 +2467,36 @@ class MainActivity : AppCompatActivity() {
                 "\u2713 Roblox hasn't changed since your last Apply\n"
             }
         )
+
+        // Does the current selection hold together? Same checks as Apply, without applying.
+        val sources = intendedSources()
+        val merged = LinkedHashMap<String, Any>()
+        sources.forEach { merged.putAll(it.second) }
+        val issues = FlagValidator.validateFlags(merged) + FlagValidator.findConflicts(sources)
+        val errors = issues.count { it.severity == Severity.ERROR }
+        val conflicts = issues.count { it.conflict }
+        val warnings = issues.size - errors - conflicts
+        sb.append("\nYour selection: ${merged.size} flags. ")
+        sb.append(
+            if (issues.isEmpty()) {
+                "No problems found."
+            } else {
+                "$errors errors, $conflicts conflicts, $warnings warnings (details go to the Activity log when you tap Apply)."
+            }
+        )
+
         val suggestion = when {
             gb <= 4.0 -> "Competitive / FPS"
             gb <= 8.0 -> "Balanced"
             else -> "High graphics"
         }
-        sb.append("\nA starting point for this device: $suggestion. It's a guess from the memory size, not a promise of better performance.")
+        sb.append("\n\nA starting point for this device: $suggestion. It's a guess from the memory size, not a promise of better performance.")
         deviceInfoText.text = sb.toString()
+
+        val profile = Profiles.builtIn.firstOrNull { it.name == suggestion }
+        suggestedProfile = profile
+        suggestButton.text = "Select \u201c$suggestion\u201d"
+        suggestButton.visibility = if (profile == null) View.GONE else View.VISIBLE
     }
 
     // ---- Flag packs ----
@@ -2173,9 +2569,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importPackFromClipboard() {
-        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = cm.primaryClip
-        val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this).toString() else ""
+        val text = clipboardText()
         if (text.isBlank()) {
             toast("The clipboard is empty. Copy a JSON flag file first.")
             return
