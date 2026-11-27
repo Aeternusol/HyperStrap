@@ -240,12 +240,18 @@ class MainActivity : AppCompatActivity() {
     private val flagAdapter = FlagAdapter()
     private var allRows: List<FlagRow> = emptyList()
 
-    // Cards built in code (flag reference, compare tool, suggested profile).
+    // Cards built in code (flag reference, compare tool, suggested profile, launch helpers).
     private lateinit var refCountText: TextView
     private lateinit var suggestButton: MaterialButton
+    private lateinit var freezeStatus: TextView
+    private lateinit var methodRow: LinearLayout
     private var suggestedProfile: Profile? = null
     private val accentButtons = mutableListOf<MaterialButton>()
+    private val extraSwitches = mutableListOf<MaterialSwitch>()
     private val docs by lazy { FlagDocs(File(filesDir, "flagdocs.json")) }
+
+    /** Set when frozen apps should be restored the next time the user returns to Stargazer. */
+    private var pendingRestore = false
 
     // Flag explorer state. scopeMode: 0 = applied only, 1 = all known, 2 = reference docs.
     private var showingAdd = false
@@ -506,7 +512,7 @@ class MainActivity : AppCompatActivity() {
         launchButton.setOnClickListener {
             launchIcon.animate().rotationBy(360f).setDuration(380)
                 .setInterpolator(DecelerateInterpolator()).start()
-            launchButton.postDelayed({ launchRoblox() }, 220)
+            launchButton.postDelayed({ launchWithHelpers() }, 220)
         }
         // Tabs: tap one, or press and slide along the pill. The touch listener forwards plain
         // taps to the click listener.
@@ -536,6 +542,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        // Apps frozen for a Roblox session come back when the user returns here.
+        if (pendingRestore) {
+            pendingRestore = false
+            restoreFrozen()
+        }
     }
 
     override fun onPause() {
@@ -991,6 +1002,7 @@ class MainActivity : AppCompatActivity() {
             it.setTextColor(onAccent)
         }
         accentButtons.forEach { it.backgroundTintList = tint }
+        extraSwitches.forEach { it.trackTintList = trackTint() }
         removeButton.setStrokeColor(tint)
         removeButton.setTextColor(a)
         clearLogButton.setTextColor(a)
@@ -1004,6 +1016,7 @@ class MainActivity : AppCompatActivity() {
         updateNav(false)
         styleSeg()
         renderChips()
+        renderMethodChips()
         renderProfiles()
         renderPacks()
         updateCount()
@@ -1048,7 +1061,7 @@ class MainActivity : AppCompatActivity() {
         lastCount = n
     }
 
-    // ---- Views built in code: flag reference, compare tool, suggested profile ----
+    // ---- Views built in code: reference, compare, suggestion, launch helpers ----
 
     private fun lp(top: Int = 0, height: Int = ViewGroup.LayoutParams.WRAP_CONTENT): LinearLayout.LayoutParams {
         val p = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height)
@@ -1073,6 +1086,21 @@ class MainActivity : AppCompatActivity() {
         pressable(b)
         b.setOnClickListener { onClick() }
         return b
+    }
+
+    /** A switch that saves itself under [key] in the app's preferences. */
+    private fun makeSwitch(label: String, key: String, default: Boolean): MaterialSwitch {
+        val sw = MaterialSwitch(this)
+        sw.layoutParams = lp(4)
+        sw.text = label
+        sw.textSize = 15f
+        sw.setTextColor(textPrimary)
+        sw.setPadding(0, dp(8), 0, dp(8))
+        sw.trackTintList = trackTint()
+        sw.isChecked = prefs.getBoolean(key, default)
+        sw.setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(key, checked).apply() }
+        extraSwitches.add(sw)
+        return sw
     }
 
     private fun buildCard(title: String, subtitle: String, children: List<View>): View {
@@ -1136,6 +1164,231 @@ class MainActivity : AppCompatActivity() {
 
         suggestButton = makeButton("Use suggested profile", true) { useSuggestedProfile() }
         (deviceInfoText.parent as LinearLayout).addView(suggestButton)
+
+        buildFreezeCard()
+    }
+
+    // ---- Launch helpers: clear cache, freeze apps ----
+
+    private fun frozenMap(): MutableMap<String, String> {
+        val out = LinkedHashMap<String, String>()
+        try {
+            val o = JSONObject(prefs.getString("frozen", "{}") ?: "{}")
+            for (k in jsonKeys(o)) out[k] = o.optString(k, "suspend")
+        } catch (e: JSONException) {
+            // Corrupt data: treat as nothing frozen.
+        }
+        return out
+    }
+
+    private fun saveFrozen(m: Map<String, String>) {
+        val o = JSONObject()
+        m.forEach { (k, v) -> o.put(k, v) }
+        prefs.edit().putString("frozen", o.toString()).apply()
+    }
+
+    private fun selectedFreeze(): MutableSet<String> =
+        HashSet(prefs.getStringSet("freeze_selected", emptySet()) ?: emptySet())
+
+    private fun freezeMethod(): String = prefs.getString("freeze_method", "suspend") ?: "suspend"
+
+    private fun updateFreezeCard() {
+        freezeStatus.text = "${selectedFreeze().size} chosen \u00b7 ${frozenMap().size} frozen right now"
+    }
+
+    private fun renderMethodChips() {
+        methodRow.removeAllViews()
+        val cur = freezeMethod()
+        val suspend = makeChip("Suspend", cur == "suspend")
+        suspend.setOnClickListener {
+            prefs.edit().putString("freeze_method", "suspend").apply()
+            renderMethodChips()
+        }
+        val disable = makeChip("Disable", cur == "disable")
+        disable.setOnClickListener {
+            prefs.edit().putString("freeze_method", "disable").apply()
+            renderMethodChips()
+        }
+        methodRow.addView(suspend)
+        methodRow.addView(disable)
+    }
+
+    private fun buildFreezeCard() {
+        val column = (tabViews[0] as ScrollView).getChildAt(0) as LinearLayout
+
+        column.addView(
+            buildCard(
+                "Launch helpers",
+                "These run when you start Roblox with the round button at the bottom right. Launching Roblox from your home screen skips them.",
+                listOf(
+                    makeSwitch("Clear Roblox's cache when I launch it", "clear_cache_on_launch", false),
+                    makeSwitch("Freeze my chosen apps when I launch it", "freeze_on_launch", false),
+                    makeSwitch("Restore them when I come back here", "restore_on_return", true),
+                    makeButton("Clear Roblox's cache now", false) { clearCacheNow() }
+                )
+            )
+        )
+
+        freezeStatus = TextView(this)
+        freezeStatus.setTextColor(textMuted)
+        freezeStatus.textSize = 13f
+        freezeStatus.layoutParams = lp(12)
+        methodRow = LinearLayout(this)
+        methodRow.orientation = LinearLayout.HORIZONTAL
+        methodRow.layoutParams = lp(12)
+
+        column.addView(
+            buildCard(
+                "Freeze apps",
+                "A frozen app is stopped and can't start again until you restore it, so it uses no CPU and gives back the memory it was using. Its data is kept. Suspend keeps the icon but greys it out; Disable turns the app off completely. Restore everything before you uninstall Stargazer.",
+                listOf(
+                    freezeStatus,
+                    methodRow,
+                    makeButton("Choose apps to freeze", false) { showFreezePicker(false, selectedFreeze()) },
+                    makeButton("Freeze chosen apps now", true) { confirmFreeze() },
+                    makeButton("Restore all frozen apps", false) { restoreFrozen() }
+                )
+            )
+        )
+        updateFreezeCard()
+    }
+
+    private fun showFreezePicker(includeSystem: Boolean, sel: MutableSet<String>) {
+        executor.execute {
+            val blocked = ResourceTools.protectedPackages(this, robloxPkg)
+            val apps = ResourceTools.installedApps(this, includeSystem, blocked)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (apps.isEmpty()) {
+                    toast("No apps found.")
+                    return@runOnUiThread
+                }
+                val names = apps.map { it.label + " (" + it.pkg + ")" }.toTypedArray()
+                val checked = BooleanArray(apps.size) { apps[it].pkg in sel }
+                dialog()
+                    .setTitle(if (includeSystem) "Apps, including system" else "Apps you installed")
+                    .setMultiChoiceItems(names, checked) { _, which, isChecked ->
+                        if (isChecked) sel.add(apps[which].pkg) else sel.remove(apps[which].pkg)
+                    }
+                    .setPositiveButton("Save") { _, _ ->
+                        prefs.edit().putStringSet("freeze_selected", sel).apply()
+                        updateFreezeCard()
+                    }
+                    .setNeutralButton(if (includeSystem) "Hide system apps" else "Show system apps") { _, _ ->
+                        showFreezePicker(!includeSystem, sel)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun confirmFreeze() {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        val blocked = ResourceTools.protectedPackages(this, robloxPkg)
+        val already = frozenMap()
+        val pkgs = selectedFreeze().filter { it !in already && it !in blocked && ResourceTools.validPackage(it) }
+        if (pkgs.isEmpty()) {
+            toast("Choose some apps first, or they're already frozen.")
+            return
+        }
+        val method = freezeMethod()
+        dialog()
+            .setTitle("Freeze ${pkgs.size} app(s)?")
+            .setMessage(
+                "They stop running right away and can't start again until you tap Restore all frozen apps. Their data is kept. Restore them before you uninstall Stargazer."
+            )
+            .setPositiveButton("Freeze") { _, _ -> runFreeze(pkgs, method) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runFreeze(pkgs: List<String>, method: String) {
+        runTask(onDone = { updateFreezeCard() }) {
+            freezeSummary(runShell(ResourceTools.freezeScript(pkgs, method)))
+        }
+    }
+
+    /** Records what was frozen and turns the raw script output into readable lines. */
+    private fun freezeSummary(raw: String): String {
+        val res = ResourceTools.parse(raw)
+        val m = frozenMap()
+        m.putAll(res.ok)
+        saveFrozen(m)
+        val lines = mutableListOf<String>()
+        raw.lines().filter { it.isNotBlank() && !it.trim().startsWith("@@") }.forEach { lines.add(it.trim()) }
+        if (res.ok.isNotEmpty()) lines.add("Froze ${res.ok.size} app(s).")
+        if (res.ok.values.any { it == "disable" } && freezeMethod() == "suspend") {
+            lines.add("Some apps were disabled instead, because suspending isn't available for them here.")
+        }
+        res.failed.forEach { (p, why) -> lines.add("Couldn't freeze $p: ${why.take(100)}") }
+        return if (lines.isEmpty()) "Nothing to do." else lines.joinToString("\n")
+    }
+
+    private fun restoreFrozen() {
+        val snapshot = frozenMap()
+        if (snapshot.isEmpty()) {
+            toast("Nothing is frozen.")
+            return
+        }
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first to restore your apps.")
+            return
+        }
+        runTask(onDone = { updateFreezeCard() }) {
+            val res = ResourceTools.parse(runShell(ResourceTools.restoreScript(snapshot)))
+            val m = frozenMap()
+            res.ok.keys.forEach { m.remove(it) }
+            saveFrozen(m)
+            val lines = mutableListOf("Restored ${res.ok.size} app(s).")
+            res.failed.forEach { (p, why) -> lines.add("Couldn't restore $p: ${why.take(100)}") }
+            lines.joinToString("\n")
+        }
+    }
+
+    private fun clearCacheNow() {
+        if (!hasShizuku()) {
+            toast("Connect Shizuku first.")
+            return
+        }
+        runTask { runShell(ResourceTools.cacheScript(robloxPkg)) }
+    }
+
+    /** Starts Roblox, first clearing its cache and freezing the chosen apps if those are switched on. */
+    private fun launchWithHelpers() {
+        val clearCache = prefs.getBoolean("clear_cache_on_launch", false)
+        val freeze = prefs.getBoolean("freeze_on_launch", false)
+        if ((clearCache || freeze) && !hasShizuku()) {
+            toast("Shizuku isn't connected, so the launch helpers were skipped.")
+            launchRoblox()
+            return
+        }
+        val blocked = ResourceTools.protectedPackages(this, robloxPkg)
+        val already = frozenMap()
+        val toFreeze = if (freeze) {
+            selectedFreeze().filter { it !in already && it !in blocked && ResourceTools.validPackage(it) }
+        } else {
+            emptyList()
+        }
+        if (!clearCache && toFreeze.isEmpty()) {
+            launchRoblox()
+            return
+        }
+        val method = freezeMethod()
+        val restoreAfter = prefs.getBoolean("restore_on_return", true)
+        runTask(onDone = {
+            if (toFreeze.isNotEmpty() && restoreAfter) pendingRestore = true
+            updateFreezeCard()
+            launchRoblox()
+        }) {
+            val sb = StringBuilder()
+            if (clearCache) sb.append(ResourceTools.cacheScript(robloxPkg))
+            sb.append(ResourceTools.freezeScript(toFreeze, method))
+            freezeSummary(runShell(sb.toString()))
+        }
     }
 
     // ---- Reference database and compare tool ----
@@ -1370,10 +1623,13 @@ class MainActivity : AppCompatActivity() {
         }
         val cur = robloxVersion()
         val last = prefs.getString("applied_version", null)
+        val frozenCount = frozenMap().size
         hintText.text = when {
             !alive -> "Open the Shizuku app and tap Start."
             !ready -> "Allow Stargazer to use Shizuku."
             cur == null -> "Roblox ($robloxPkg) isn't installed."
+            frozenCount > 0 ->
+                "$frozenCount app(s) are frozen. Restore them from the Tweaks tab when you're done."
             last != null && last != cur ->
                 "Roblox updated ($last \u2192 $cur) since you last applied flags. Review the Flags tab, some may no longer work."
             else -> ""
@@ -1387,6 +1643,7 @@ class MainActivity : AppCompatActivity() {
             it.isEnabled = enabled
             it.alpha = if (enabled) 1f else 0.4f
         }
+        updateFreezeCard()
         if (tab == 1 && !showingAdd) refreshExplorer()
         if (tab == 2) {
             updateDeviceInfo()

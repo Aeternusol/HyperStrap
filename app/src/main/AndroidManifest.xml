@@ -4,6 +4,9 @@
     <!-- Only used to download flag files from links you paste (https only) -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Lets the app list your installed apps so you can choose which ones to freeze -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <!-- Lets the app check whether Roblox is installed and launch it (package visibility, Android 11+) -->
     <queries>
         <package android:name="com.roblox.client" />
