@@ -141,16 +141,24 @@ object ResourceTools {
     }
 
     /**
-     * Clears only Roblox's cache, never its data or login. Newer Android can clear just the cache
-     * (`pm clear --cache-only`); otherwise the cache on shared storage is emptied, which is the
-     * part a shell is allowed to reach.
+     * Clears only Roblox's cache, never its data or login.
+     *
+     * First it asks Android to clear just the cache (`cmd package clear --cache-only`). That call
+     * has no time limit of its own and on some phones never answers, so it runs under `timeout`
+     * and writes to a file rather than a pipe (a pipe could be held open by a stuck process).
+     * If Android doesn't confirm, the cache on shared storage is emptied instead. That can be
+     * thousands of files, so it runs in the background with its output detached, and this script
+     * returns straight away instead of waiting for it.
      */
     fun cacheScript(pkg: String): String =
-        "R=\$(pm clear --cache-only $pkg 2>&1)\n" +
+        "exec </dev/null\n" +
+            "OUT=/data/local/tmp/stargazer_cache.out\n" +
+            "timeout 10 cmd package clear --cache-only $pkg >\$OUT 2>&1\n" +
+            "R=\$(cat \$OUT 2>/dev/null)\n" +
+            "rm -f \$OUT\n" +
             "case \"\$R\" in\n" +
             "*Success*) echo 'Roblox cache cleared.';;\n" +
-            "*) if rm -rf /sdcard/Android/data/$pkg/cache/* 2>/dev/null; then " +
-            "echo 'Roblox cache cleared (the part this phone allows).'; " +
-            "else echo \"Couldn't clear the cache: \$(printf %s \"\$R\" | head -n 1)\"; fi;;\n" +
+            "*) (rm -rf /sdcard/Android/data/$pkg/cache/* >/dev/null 2>&1 </dev/null &)\n" +
+            "echo 'Android did not confirm a full clear, so Roblox cache files on shared storage are being deleted in the background.';;\n" +
             "esac\n"
 }
