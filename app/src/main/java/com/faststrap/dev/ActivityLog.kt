@@ -21,6 +21,14 @@ class ActivityLog(private val max: Int = 300) {
 
     fun clear() = items.clear()
 
+    /** Plain text, oldest first, for copying to the clipboard. */
+    fun plain(): String {
+        val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+        return items.joinToString("\n") {
+            fmt.format(Date(it.time)) + " " + it.severity.name.padEnd(5) + " " + it.text
+        }
+    }
+
     fun render(): CharSequence {
         val sb = SpannableStringBuilder()
         val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())

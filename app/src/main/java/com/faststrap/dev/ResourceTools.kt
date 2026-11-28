@@ -12,18 +12,22 @@ class AppEntry(val label: String, val pkg: String)
 class FreezeResult(val ok: Map<String, String>, val failed: Map<String, String>)
 
 /**
- * Shell scripts and helpers for freezing apps and clearing Roblox's cache through Shizuku.
+ * Shell scripts and helpers for freezing apps, clearing Roblox's cache and a few root-only
+ * system tools.
  *
- * "Freezing" here means the app is stopped and can't start again until it is restored, either
- * by suspending it (`pm suspend`, the icon stays but is greyed out) or by disabling it
- * (`pm disable-user`). A stopped app uses no CPU and gives back the memory it was using; its
- * data is kept. It is not the same as pausing a running process in place.
+ * Freezing has three methods. Suspend (`pm suspend`) and Disable (`pm disable-user`) need only
+ * Shizuku: the app is stopped and can't start again until restored, so it uses no CPU and
+ * gives its memory back. Pause needs root: the app's processes are stopped in place with
+ * SIGSTOP and continued with SIGCONT, so they keep their state but use no CPU.
  */
 object ResourceTools {
     private val pkgRegex = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
+    private val devRegex = Regex("^/[A-Za-z0-9_./-]+$")
 
+    /** Package names are only letters, digits, dots and underscores, which keeps them safe in a shell. */
     fun validPackage(p: String): Boolean = pkgRegex.matches(p)
 
+    /** Apps that must never be frozen: this app, Shizuku, Roblox, the system UI and basic phone parts. */
     fun protectedPackages(ctx: Context, robloxPkg: String): Set<String> {
         val s = hashSetOf(
             ctx.packageName, robloxPkg, "moe.shizuku.privileged.api", "android",
@@ -32,23 +36,31 @@ object ResourceTools {
             "com.android.providers.telephony", "com.android.providers.contacts",
             "com.android.permissioncontroller", "com.google.android.permissioncontroller",
             "com.android.packageinstaller", "com.android.inputmethod.latin",
-            "com.google.android.inputmethod.latin"
+            "com.google.android.inputmethod.latin",
+            "me.weishu.kernelsu", "com.topjohnwu.magisk"
         )
         try {
             val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             ctx.packageManager.resolveActivity(home, 0)?.activityInfo?.packageName?.let { s.add(it) }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            // Keep going with what we have.
+        }
         try {
             Settings.Secure.getString(ctx.contentResolver, "default_input_method")
                 ?.substringBefore('/')?.let { s.add(it) }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            // Keep going with what we have.
+        }
         try {
             (ctx.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager)
                 ?.defaultDialerPackage?.let { s.add(it) }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            // Keep going with what we have.
+        }
         return s
     }
 
+    /** Apps the user could freeze. System apps are only listed on request, and only ones with an icon. */
     fun installedApps(ctx: Context, includeSystem: Boolean, blocked: Set<String>): List<AppEntry> {
         val pm = ctx.packageManager
         val out = ArrayList<AppEntry>()
@@ -63,33 +75,72 @@ object ResourceTools {
         return out.sortedBy { it.label.lowercase() }
     }
 
+    /** Shell that lists the process ids of a package, including its sub-processes (pkg:name). */
+    private fun pidsLine(p: String): String =
+        "PIDS=\$(ps -A -o PID,NAME 2>/dev/null | while read P N; do case \"\$N\" in $p|$p:*) echo \$P;; esac; done)\n"
+
+    /**
+     * One line per app: @@OKS (suspended), @@OKD (disabled), @@OKP (paused, root) or @@FAIL with
+     * the reason. When suspending isn't available for an app, it is disabled instead.
+     */
     fun freezeScript(pkgs: List<String>, method: String): String {
         val sb = StringBuilder()
         for (p in pkgs) {
             if (!validPackage(p)) continue
-            if (method == "disable") {
-                sb.append("R=\$(pm disable-user --user 0 $p 2>&1)\n")
-                sb.append("case \"\$R\" in *disabled*) echo \"@@OKD $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
-            } else {
-                sb.append("R=\$(pm suspend --user 0 $p 2>&1)\n")
-                sb.append("case \"\$R\" in *\"suspended state: true\"*) echo \"@@OKS $p\";; *)\n")
-                sb.append("R2=\$(pm disable-user --user 0 $p 2>&1)\n")
-                sb.append("case \"\$R2\" in *disabled*) echo \"@@OKD $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac;; esac\n")
+            when (method) {
+                "pause" -> {
+                    sb.append(pidsLine(p))
+                    sb.append(
+                        "if [ -n \"\$PIDS\" ]; then kill -STOP \$PIDS && echo \"@@OKP $p\"; " +
+                            "else echo \"@@FAIL $p not running right now\"; fi\n"
+                    )
+                }
+                "disable" -> {
+                    sb.append("R=\$(pm disable-user --user 0 $p 2>&1)\n")
+                    sb.append(
+                        "case \"\$R\" in *disabled*) echo \"@@OKD $p\";; " +
+                            "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
+                    )
+                }
+                else -> {
+                    sb.append("R=\$(pm suspend --user 0 $p 2>&1)\n")
+                    sb.append("case \"\$R\" in *\"suspended state: true\"*) echo \"@@OKS $p\";; *)\n")
+                    sb.append("R2=\$(pm disable-user --user 0 $p 2>&1)\n")
+                    sb.append(
+                        "case \"\$R2\" in *disabled*) echo \"@@OKD $p\";; " +
+                            "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac;; esac\n"
+                    )
+                }
             }
         }
         return sb.toString()
     }
 
+    /** Undoes each freeze the way it was done. One @@OK or @@FAIL line per app. */
     fun restoreScript(frozen: Map<String, String>): String {
         val sb = StringBuilder()
         for ((p, method) in frozen) {
             if (!validPackage(p)) continue
-            if (method == "disable") {
-                sb.append("R=\$(pm enable --user 0 $p 2>&1)\n")
-                sb.append("case \"\$R\" in *enabled*) echo \"@@OK $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
-            } else {
-                sb.append("R=\$(pm unsuspend --user 0 $p 2>&1)\n")
-                sb.append("case \"\$R\" in *\"suspended state: false\"*) echo \"@@OK $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
+            when (method) {
+                "pause" -> {
+                    sb.append(pidsLine(p))
+                    sb.append("if [ -n \"\$PIDS\" ]; then kill -CONT \$PIDS; fi\n")
+                    sb.append("echo \"@@OK $p\"\n")
+                }
+                "disable" -> {
+                    sb.append("R=\$(pm enable --user 0 $p 2>&1)\n")
+                    sb.append(
+                        "case \"\$R\" in *enabled*) echo \"@@OK $p\";; " +
+                            "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
+                    )
+                }
+                else -> {
+                    sb.append("R=\$(pm unsuspend --user 0 $p 2>&1)\n")
+                    sb.append(
+                        "case \"\$R\" in *\"suspended state: false\"*) echo \"@@OK $p\";; " +
+                            "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
+                    )
+                }
             }
         }
         return sb.toString()
@@ -103,6 +154,7 @@ object ResourceTools {
             when {
                 l.startsWith("@@OKS ") -> ok[l.substring(6).trim()] = "suspend"
                 l.startsWith("@@OKD ") -> ok[l.substring(6).trim()] = "disable"
+                l.startsWith("@@OKP ") -> ok[l.substring(6).trim()] = "pause"
                 l.startsWith("@@OK ") -> ok[l.substring(5).trim()] = ""
                 l.startsWith("@@FAIL ") -> {
                     val rest = l.substring(7).trim()
@@ -114,124 +166,81 @@ object ResourceTools {
         return FreezeResult(ok, failed)
     }
 
-    fun cacheScript(pkg: String, preferRoot: Boolean = true): String {
-        return """
-exec </dev/null
-PKG=\"$pkg\"
-OUT=/data/local/tmp/stargazer_cache.out
-REPORT=/data/local/tmp/stargazer_cache_report.txt
-rm -f \"\$OUT\" \"\$REPORT\"
-touch \"\$REPORT\"
+    // ---- Roblox cache ----
+    // Each step is its own script so the app can measure the cache between steps.
 
-echo \"=== Stargazer cache clear for \$PKG ===\" | tee -a \"\$REPORT\"
+    /**
+     * Asks Android to clear just this app's cache. It has no time limit of its own and on some
+     * phones never answers or refuses, so it runs under `timeout` and writes to a file rather
+     * than a pipe. Prints "Success" when Android confirms.
+     */
+    fun cmdCacheScript(pkg: String): String =
+        "exec </dev/null\n" +
+            "OUT=/data/local/tmp/stargazer_cache.out\n" +
+            "timeout 8 cmd package clear --cache-only $pkg >\$OUT 2>&1\n" +
+            "cat \$OUT 2>/dev/null\n" +
+            "rm -f \$OUT\n"
 
-echo \"[1/4] Clearing shared storage caches...\" | tee -a \"\$REPORT\"
-EXT_OK=0
-for d in \\
-  \"/sdcard/Android/data/\$PKG/cache\" \\
-  \"/sdcard/Android/data/\$PKG/code_cache\" \\
-  \"/storage/emulated/0/Android/data/\$PKG/cache\" \\
-  \"/storage/emulated/0/Android/data/\$PKG/code_cache\"
-do
-  if [ -d \"\$d\" ]; then
-    rm -rf \"\$d\"/* \"\$d\"/.[!.]* \"\$d\"/..?* 2>/dev/null
-    EXT_OK=1
-  fi
-done
-if [ \"\$EXT_OK\" = 1 ]; then
-  echo \"  Shared storage cache cleared.\" | tee -a \"\$REPORT\"
-else
-  echo \"  No shared storage cache directories found (or already empty).\" | tee -a \"\$REPORT\"
-fi
+    /**
+     * The global trim: asks Android to free storage by deleting cached files of every app until
+     * a huge amount is free, which in practice empties all app caches, Roblox's included. Android
+     * allows this from Shizuku even when it refuses to clear a single app's cache.
+     * Prints "@@RC 0" when the command finished normally.
+     */
+    fun trimScript(): String =
+        "exec </dev/null\n" +
+            "timeout 25 cmd package trim-caches 1000G >/dev/null 2>&1\n" +
+            "echo \"@@RC \$?\"\n"
 
-echo \"[2/4] Trying cmd package clear --cache-only...\" | tee -a \"\$REPORT\"
-timeout 12 cmd package clear --cache-only \"\$PKG\" >\"\$OUT\" 2>&1
-R=\$(cat \"\$OUT\" 2>/dev/null)
-rm -f \"\$OUT\"
-case \"\$R\" in
-  *Success*|*success*)
-    echo \"  Official cache clear succeeded.\" | tee -a \"\$REPORT\"
-    OFFICIAL_OK=1
-    ;;
-  *)
-    echo \"  Official clear blocked or timed out (common on many ROMs).\" | tee -a \"\$REPORT\"
-    OFFICIAL_OK=0
-    ;;
-esac
+    /** Deletes Roblox's cache on shared storage in the background (output detached so nothing waits on it). */
+    fun sharedCacheScript(pkg: String): String =
+        "(rm -rf /sdcard/Android/data/$pkg/cache/* >/dev/null 2>&1 </dev/null &)\n"
 
-echo \"[3/4] Forcing global cache trim (pm trim-caches 999G)...\" | tee -a \"\$REPORT\"
-timeout 25 pm trim-caches 999G >\"\$OUT\" 2>&1
-rm -f \"\$OUT\"
-echo \"  Global trim finished.\" | tee -a \"\$REPORT\"
+    /** Root: deletes Roblox's cache folders directly. */
+    fun rootCacheScript(pkg: String): String =
+        "am force-stop $pkg\n" +
+            "rm -rf /data/user/0/$pkg/cache/* /data/user/0/$pkg/code_cache/* /sdcard/Android/data/$pkg/cache/* 2>/dev/null\n" +
+            "echo done\n"
 
-echo \"[4/4] Checking for root (KernelSU / Magisk / su)...\" | tee -a \"\$REPORT\"
-ROOT_OK=0
-SU_CMD=\"\"
-for c in /system/bin/su /system/xbin/su /sbin/su /data/adb/ksu/bin/ksud /data/adb/magisk/magisk /data/adb/ksu/bin/su; do
-  if [ -x \"\$c\" ]; then SU_CMD=\"\$c\"; break; fi
-done
-if [ -z \"\$SU_CMD\" ] && command -v su >/dev/null 2>&1; then SU_CMD=\"su\"; fi
+    // ---- Root-only system tools ----
 
-if [ -n \"\$SU_CMD\" ]; then
-  if timeout 4 \"\$SU_CMD\" -c \"id\" 2>/dev/null | grep -q \"uid=0\"; then
-    echo \"  Root available via \$SU_CMD — clearing private cache dirs...\" | tee -a \"\$REPORT\"
-    timeout 15 \"\$SU_CMD\" -c \"
-      rm -rf /data/data/\$PKG/cache/* /data/data/\$PKG/cache/.[!.]* /data/data/\$PKG/cache/..?* 2>/dev/null
-      rm -rf /data/data/\$PKG/code_cache/* /data/data/\$PKG/code_cache/.[!.]* /data/data/\$PKG/code_cache/..?* 2>/dev/null
-      rm -rf /data/user/0/\$PKG/cache/* /data/user/0/\$PKG/code_cache/* 2>/dev/null
-      echo done
-    \" >/dev/null 2>&1
-    ROOT_OK=1
-    echo \"  Private /data/data cache cleared with root.\" | tee -a \"\$REPORT\"
-  else
-    echo \"  su binary found but not usable (no root grant or temp root inactive).\" | tee -a \"\$REPORT\"
-  fi
-else
-  echo \"  No root binary found — private cache left to the system trim.\" | tee -a \"\$REPORT\"
-fi
-
-echo \"\" | tee -a \"\$REPORT\"
-echo \"=== Summary ===\" | tee -a \"\$REPORT\"
-if [ \"\$OFFICIAL_OK\" = 1 ]; then
-  echo \"• Official single-app clear: OK\" | tee -a \"\$REPORT\"
-else
-  echo \"• Official single-app clear: blocked (normal on many phones)\" | tee -a \"\$REPORT\"
-fi
-echo \"• Shared storage cache: cleared\" | tee -a \"\$REPORT\"
-echo \"• Global system trim: completed\" | tee -a \"\$REPORT\"
-if [ \"\$ROOT_OK\" = 1 ]; then
-  echo \"• Private data cache (root): cleared\" | tee -a \"\$REPORT\"
-else
-  echo \"• Private data cache: not cleared (no usable root)\" | tee -a \"\$REPORT\"
-fi
-echo \"\" | tee -a \"\$REPORT\"
-echo \"Roblox cache clear finished. Restart Roblox for the cleanest result.\" | tee -a \"\$REPORT\"
-cat \"\$REPORT\"
-rm -f \"\$REPORT\"
-\"\"".trimIndent()
+    /** Stops (or continues) every running background compiler process. */
+    fun compilersScript(stop: Boolean): String {
+        val sig = if (stop) "STOP" else "CONT"
+        val verb = if (stop) "Paused" else "Resumed"
+        return "N=0\n" +
+            "for P in \$(pidof dex2oat dex2oat32 dex2oat64 dex2oatd 2>/dev/null); do kill -$sig \$P && N=\$((N+1)); done\n" +
+            "if [ \$N -eq 0 ]; then echo 'No background compiler is running right now.'; " +
+            "else echo \"$verb \$N compiler process(es).\"; fi\n"
     }
 
-    fun rootProbeScript(): String = \"\"\"
-exec </dev/null
-SU_CMD=\"\"
-for c in /system/bin/su /system/xbin/su /sbin/su /data/adb/ksu/bin/ksud /data/adb/magisk/magisk /data/adb/ksu/bin/su; do
-  if [ -x \"\$c\" ]; then SU_CMD=\"\$c\"; break; fi
-done
-if [ -z \"\$SU_CMD\" ] && command -v su >/dev/null 2>&1; then SU_CMD=\"su\"; fi
-if [ -z \"\$SU_CMD\" ]; then
-  echo \"none\"
-  exit 0
-fi
-if timeout 3 \"\$SU_CMD\" -c \"id\" 2>/dev/null | grep -q \"uid=0\"; then
-  if [ -d /data/adb/ksu ] || [ -x /data/adb/ksu/bin/ksud ]; then
-    echo \"kernelsu\"
-  elif [ -d /data/adb/magisk ] || [ -f /data/adb/magisk.db ]; then
-    echo \"magisk\"
-  else
-    echo \"su\"
-  fi
-else
-  echo \"present-but-inactive\"
-fi
-\"\"\".trimIndent()
+    /**
+     * Turns swap (virtual RAM) off, but only when there is enough free RAM to take what is in it.
+     * Prints one @@SWAP line per device turned off so it can be turned back on.
+     */
+    fun swapOffScript(): String =
+        "AV=\$(grep MemAvailable /proc/meminfo | tr -s ' ' | cut -d' ' -f2)\n" +
+            "ST=\$(grep SwapTotal /proc/meminfo | tr -s ' ' | cut -d' ' -f2)\n" +
+            "SF=\$(grep SwapFree /proc/meminfo | tr -s ' ' | cut -d' ' -f2)\n" +
+            "if [ -z \"\$ST\" ] || [ \"\$ST\" = \"0\" ]; then echo 'No virtual RAM (swap) is active.'\n" +
+            "else\n" +
+            "SU=\$((ST-SF))\n" +
+            "if [ \"\$SU\" -gt \$((AV*70/100)) ]; then echo \"Not turned off: \$((SU/1024)) MB of virtual RAM is in use and only \$((AV/1024)) MB of real RAM is free, so the phone could freeze.\"\n" +
+            "else\n" +
+            "for D in \$(tail -n +2 /proc/swaps | while read F T S U P; do echo \"\$F\"; done); do swapoff \"\$D\" && echo \"@@SWAP \$D\"; done\n" +
+            "echo 'Virtual RAM is off until you turn it back on or reboot.'\n" +
+            "fi\n" +
+            "fi\n"
+
+    fun validSwapDevice(d: String): Boolean = devRegex.matches(d)
+
+    fun swapOnScript(devices: List<String>): String {
+        val sb = StringBuilder()
+        for (d in devices) {
+            if (!validSwapDevice(d)) continue
+            sb.append("swapon \"$d\" && echo \"Turned on $d\"\n")
+        }
+        sb.append("echo 'Virtual RAM is back on.'\n")
+        return sb.toString()
+    }
 }
