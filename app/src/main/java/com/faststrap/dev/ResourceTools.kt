@@ -22,10 +22,8 @@ class FreezeResult(val ok: Map<String, String>, val failed: Map<String, String>)
 object ResourceTools {
     private val pkgRegex = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
 
-    /** Package names are only letters, digits, dots and underscores, which keeps them safe in a shell. */
     fun validPackage(p: String): Boolean = pkgRegex.matches(p)
 
-    /** Apps that must never be frozen: this app, Shizuku, Roblox, the system UI and basic phone parts. */
     fun protectedPackages(ctx: Context, robloxPkg: String): Set<String> {
         val s = hashSetOf(
             ctx.packageName, robloxPkg, "moe.shizuku.privileged.api", "android",
@@ -39,25 +37,18 @@ object ResourceTools {
         try {
             val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             ctx.packageManager.resolveActivity(home, 0)?.activityInfo?.packageName?.let { s.add(it) }
-        } catch (e: Exception) {
-            // Keep going with what we have.
-        }
+        } catch (e: Exception) {}
         try {
             Settings.Secure.getString(ctx.contentResolver, "default_input_method")
                 ?.substringBefore('/')?.let { s.add(it) }
-        } catch (e: Exception) {
-            // Keep going with what we have.
-        }
+        } catch (e: Exception) {}
         try {
             (ctx.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager)
                 ?.defaultDialerPackage?.let { s.add(it) }
-        } catch (e: Exception) {
-            // Keep going with what we have.
-        }
+        } catch (e: Exception) {}
         return s
     }
 
-    /** Apps the user could freeze. System apps are only listed on request, and only ones with an icon. */
     fun installedApps(ctx: Context, includeSystem: Boolean, blocked: Set<String>): List<AppEntry> {
         val pm = ctx.packageManager
         val out = ArrayList<AppEntry>()
@@ -72,50 +63,33 @@ object ResourceTools {
         return out.sortedBy { it.label.lowercase() }
     }
 
-    /**
-     * One line per app: @@OKS (suspended), @@OKD (disabled) or @@FAIL with the reason. When
-     * suspending isn't available for an app, it is disabled instead.
-     */
     fun freezeScript(pkgs: List<String>, method: String): String {
         val sb = StringBuilder()
         for (p in pkgs) {
             if (!validPackage(p)) continue
             if (method == "disable") {
                 sb.append("R=\$(pm disable-user --user 0 $p 2>&1)\n")
-                sb.append(
-                    "case \"\$R\" in *disabled*) echo \"@@OKD $p\";; " +
-                        "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
-                )
+                sb.append("case \"\$R\" in *disabled*) echo \"@@OKD $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
             } else {
                 sb.append("R=\$(pm suspend --user 0 $p 2>&1)\n")
                 sb.append("case \"\$R\" in *\"suspended state: true\"*) echo \"@@OKS $p\";; *)\n")
                 sb.append("R2=\$(pm disable-user --user 0 $p 2>&1)\n")
-                sb.append(
-                    "case \"\$R2\" in *disabled*) echo \"@@OKD $p\";; " +
-                        "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac;; esac\n"
-                )
+                sb.append("case \"\$R2\" in *disabled*) echo \"@@OKD $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac;; esac\n")
             }
         }
         return sb.toString()
     }
 
-    /** Undoes each freeze the way it was done. One @@OK or @@FAIL line per app. */
     fun restoreScript(frozen: Map<String, String>): String {
         val sb = StringBuilder()
         for ((p, method) in frozen) {
             if (!validPackage(p)) continue
             if (method == "disable") {
                 sb.append("R=\$(pm enable --user 0 $p 2>&1)\n")
-                sb.append(
-                    "case \"\$R\" in *enabled*) echo \"@@OK $p\";; " +
-                        "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
-                )
+                sb.append("case \"\$R\" in *enabled*) echo \"@@OK $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
             } else {
                 sb.append("R=\$(pm unsuspend --user 0 $p 2>&1)\n")
-                sb.append(
-                    "case \"\$R\" in *\"suspended state: false\"*) echo \"@@OK $p\";; " +
-                        "*) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n"
-                )
+                sb.append("case \"\$R\" in *\"suspended state: false\"*) echo \"@@OK $p\";; *) echo \"@@FAIL $p \$(printf %s \"\$R\" | head -n 1)\";; esac\n")
             }
         }
         return sb.toString()
@@ -140,25 +114,124 @@ object ResourceTools {
         return FreezeResult(ok, failed)
     }
 
-    /**
-     * Clears only Roblox's cache, never its data or login.
-     *
-     * First it asks Android to clear just the cache (`cmd package clear --cache-only`). That call
-     * has no time limit of its own and on some phones never answers, so it runs under `timeout`
-     * and writes to a file rather than a pipe (a pipe could be held open by a stuck process).
-     * If Android doesn't confirm, the cache on shared storage is emptied instead. That can be
-     * thousands of files, so it runs in the background with its output detached, and this script
-     * returns straight away instead of waiting for it.
-     */
-    fun cacheScript(pkg: String): String =
-        "exec </dev/null\n" +
-            "OUT=/data/local/tmp/stargazer_cache.out\n" +
-            "timeout 10 cmd package clear --cache-only $pkg >\$OUT 2>&1\n" +
-            "R=\$(cat \$OUT 2>/dev/null)\n" +
-            "rm -f \$OUT\n" +
-            "case \"\$R\" in\n" +
-            "*Success*) echo 'Roblox cache cleared.';;\n" +
-            "*) (rm -rf /sdcard/Android/data/$pkg/cache/* >/dev/null 2>&1 </dev/null &)\n" +
-            "echo 'Android did not confirm a full clear, so Roblox cache files on shared storage are being deleted in the background.';;\n" +
-            "esac\n"
+    fun cacheScript(pkg: String, preferRoot: Boolean = true): String {
+        return """
+exec </dev/null
+PKG=\"$pkg\"
+OUT=/data/local/tmp/stargazer_cache.out
+REPORT=/data/local/tmp/stargazer_cache_report.txt
+rm -f \"\$OUT\" \"\$REPORT\"
+touch \"\$REPORT\"
+
+echo \"=== Stargazer cache clear for \$PKG ===\" | tee -a \"\$REPORT\"
+
+echo \"[1/4] Clearing shared storage caches...\" | tee -a \"\$REPORT\"
+EXT_OK=0
+for d in \\
+  \"/sdcard/Android/data/\$PKG/cache\" \\
+  \"/sdcard/Android/data/\$PKG/code_cache\" \\
+  \"/storage/emulated/0/Android/data/\$PKG/cache\" \\
+  \"/storage/emulated/0/Android/data/\$PKG/code_cache\"
+do
+  if [ -d \"\$d\" ]; then
+    rm -rf \"\$d\"/* \"\$d\"/.[!.]* \"\$d\"/..?* 2>/dev/null
+    EXT_OK=1
+  fi
+done
+if [ \"\$EXT_OK\" = 1 ]; then
+  echo \"  Shared storage cache cleared.\" | tee -a \"\$REPORT\"
+else
+  echo \"  No shared storage cache directories found (or already empty).\" | tee -a \"\$REPORT\"
+fi
+
+echo \"[2/4] Trying cmd package clear --cache-only...\" | tee -a \"\$REPORT\"
+timeout 12 cmd package clear --cache-only \"\$PKG\" >\"\$OUT\" 2>&1
+R=\$(cat \"\$OUT\" 2>/dev/null)
+rm -f \"\$OUT\"
+case \"\$R\" in
+  *Success*|*success*)
+    echo \"  Official cache clear succeeded.\" | tee -a \"\$REPORT\"
+    OFFICIAL_OK=1
+    ;;
+  *)
+    echo \"  Official clear blocked or timed out (common on many ROMs).\" | tee -a \"\$REPORT\"
+    OFFICIAL_OK=0
+    ;;
+esac
+
+echo \"[3/4] Forcing global cache trim (pm trim-caches 999G)...\" | tee -a \"\$REPORT\"
+timeout 25 pm trim-caches 999G >\"\$OUT\" 2>&1
+rm -f \"\$OUT\"
+echo \"  Global trim finished.\" | tee -a \"\$REPORT\"
+
+echo \"[4/4] Checking for root (KernelSU / Magisk / su)...\" | tee -a \"\$REPORT\"
+ROOT_OK=0
+SU_CMD=\"\"
+for c in /system/bin/su /system/xbin/su /sbin/su /data/adb/ksu/bin/ksud /data/adb/magisk/magisk /data/adb/ksu/bin/su; do
+  if [ -x \"\$c\" ]; then SU_CMD=\"\$c\"; break; fi
+done
+if [ -z \"\$SU_CMD\" ] && command -v su >/dev/null 2>&1; then SU_CMD=\"su\"; fi
+
+if [ -n \"\$SU_CMD\" ]; then
+  if timeout 4 \"\$SU_CMD\" -c \"id\" 2>/dev/null | grep -q \"uid=0\"; then
+    echo \"  Root available via \$SU_CMD — clearing private cache dirs...\" | tee -a \"\$REPORT\"
+    timeout 15 \"\$SU_CMD\" -c \"
+      rm -rf /data/data/\$PKG/cache/* /data/data/\$PKG/cache/.[!.]* /data/data/\$PKG/cache/..?* 2>/dev/null
+      rm -rf /data/data/\$PKG/code_cache/* /data/data/\$PKG/code_cache/.[!.]* /data/data/\$PKG/code_cache/..?* 2>/dev/null
+      rm -rf /data/user/0/\$PKG/cache/* /data/user/0/\$PKG/code_cache/* 2>/dev/null
+      echo done
+    \" >/dev/null 2>&1
+    ROOT_OK=1
+    echo \"  Private /data/data cache cleared with root.\" | tee -a \"\$REPORT\"
+  else
+    echo \"  su binary found but not usable (no root grant or temp root inactive).\" | tee -a \"\$REPORT\"
+  fi
+else
+  echo \"  No root binary found — private cache left to the system trim.\" | tee -a \"\$REPORT\"
+fi
+
+echo \"\" | tee -a \"\$REPORT\"
+echo \"=== Summary ===\" | tee -a \"\$REPORT\"
+if [ \"\$OFFICIAL_OK\" = 1 ]; then
+  echo \"• Official single-app clear: OK\" | tee -a \"\$REPORT\"
+else
+  echo \"• Official single-app clear: blocked (normal on many phones)\" | tee -a \"\$REPORT\"
+fi
+echo \"• Shared storage cache: cleared\" | tee -a \"\$REPORT\"
+echo \"• Global system trim: completed\" | tee -a \"\$REPORT\"
+if [ \"\$ROOT_OK\" = 1 ]; then
+  echo \"• Private data cache (root): cleared\" | tee -a \"\$REPORT\"
+else
+  echo \"• Private data cache: not cleared (no usable root)\" | tee -a \"\$REPORT\"
+fi
+echo \"\" | tee -a \"\$REPORT\"
+echo \"Roblox cache clear finished. Restart Roblox for the cleanest result.\" | tee -a \"\$REPORT\"
+cat \"\$REPORT\"
+rm -f \"\$REPORT\"
+\"\"".trimIndent()
+    }
+
+    fun rootProbeScript(): String = \"\"\"
+exec </dev/null
+SU_CMD=\"\"
+for c in /system/bin/su /system/xbin/su /sbin/su /data/adb/ksu/bin/ksud /data/adb/magisk/magisk /data/adb/ksu/bin/su; do
+  if [ -x \"\$c\" ]; then SU_CMD=\"\$c\"; break; fi
+done
+if [ -z \"\$SU_CMD\" ] && command -v su >/dev/null 2>&1; then SU_CMD=\"su\"; fi
+if [ -z \"\$SU_CMD\" ]; then
+  echo \"none\"
+  exit 0
+fi
+if timeout 3 \"\$SU_CMD\" -c \"id\" 2>/dev/null | grep -q \"uid=0\"; then
+  if [ -d /data/adb/ksu ] || [ -x /data/adb/ksu/bin/ksud ]; then
+    echo \"kernelsu\"
+  elif [ -d /data/adb/magisk ] || [ -f /data/adb/magisk.db ]; then
+    echo \"magisk\"
+  else
+    echo \"su\"
+  fi
+else
+  echo \"present-but-inactive\"
+fi
+\"\"\".trimIndent()
 }
